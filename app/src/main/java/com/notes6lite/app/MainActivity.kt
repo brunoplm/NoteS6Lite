@@ -24,6 +24,7 @@ import androidx.lifecycle.lifecycleScope
 import com.notes6lite.app.data.local.NoteDatabase
 import com.notes6lite.app.data.repository.NotebookRepository
 import com.notes6lite.app.domain.model.ColorScheme
+import com.notes6lite.app.domain.model.DocumentViewMode
 import com.notes6lite.app.domain.model.EraserMode
 import com.notes6lite.app.domain.model.NotePage
 import com.notes6lite.app.domain.model.Notebook
@@ -73,6 +74,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPrevPage: Button
     private lateinit var btnNextPage: Button
     private lateinit var btnAddPage: Button
+    private lateinit var btnViewMode: Button
 
     /** Espessura + cor guardadas em cada botão de preset (P1..P3). */
     private data class InkPreset(val width: Float, val color: Int)
@@ -90,6 +92,7 @@ class MainActivity : AppCompatActivity() {
     private var currentPdfPage: PdfRenderer.Page? = null
     private var currentPdfTempFile: File? = null
     private val pageStrokesMap = HashMap<Int, List<Stroke>>()
+    private val pageBitmapCache = HashMap<Int, Bitmap>()
     private var currentPageBitmap: Bitmap? = null
 
     private var currentNotebook: Notebook? = null
@@ -119,12 +122,23 @@ class MainActivity : AppCompatActivity() {
         loadPresets()
         updateStrokeControls()
         updateEraserModeButton()
+        updateViewModeButton()
 
         canvasView.onStrokeCommitted = {
-            // Mantém os traços em memória no mapa da página atual
-            pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            if (!canvasView.isContinuousActive) {
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            }
             scheduleAutosave()
         }
+
+        canvasView.onPageChangedListener = { newIndex ->
+            if (currentPageIndex != newIndex) {
+                currentPageIndex = newIndex
+                updatePageIndicator()
+            }
+        }
+
+        setupContinuousProvider()
 
         lifecycleScope.launch {
             val requestedId = intent.getLongExtra(EXTRA_NOTEBOOK_ID, -1L)
@@ -165,6 +179,69 @@ class MainActivity : AppCompatActivity() {
         btnPrevPage = findViewById(R.id.btnPrevPage)
         btnNextPage = findViewById(R.id.btnNextPage)
         btnAddPage = findViewById(R.id.btnAddPage)
+        btnViewMode = findViewById(R.id.btnViewMode)
+    }
+
+    private fun setupContinuousProvider() {
+        canvasView.continuousProvider = object : NoteCanvasView.ContinuousDocumentProvider {
+            override fun getPageCount(): Int = totalPages
+
+            override fun getPageWidth(index: Int): Int {
+                val renderer = pdfRenderer
+                if (renderer != null && index < renderer.pageCount) {
+                    val page = runCatching { renderer.openPage(index) }.getOrNull()
+                    val w = page?.width ?: PageTemplate.DEFAULT_WIDTH
+                    val h = page?.height ?: PageTemplate.DEFAULT_HEIGHT
+                    val target = pdfPageTargetSize(w, h)
+                    page?.close()
+                    return target.first
+                }
+                return PageTemplate.DEFAULT_WIDTH
+            }
+
+            override fun getPageHeight(index: Int): Int {
+                val renderer = pdfRenderer
+                if (renderer != null && index < renderer.pageCount) {
+                    val page = runCatching { renderer.openPage(index) }.getOrNull()
+                    val w = page?.width ?: PageTemplate.DEFAULT_WIDTH
+                    val h = page?.height ?: PageTemplate.DEFAULT_HEIGHT
+                    val target = pdfPageTargetSize(w, h)
+                    page?.close()
+                    return target.second
+                }
+                return PageTemplate.DEFAULT_HEIGHT
+            }
+
+            override fun getPageBitmap(index: Int): Bitmap? {
+                val cached = pageBitmapCache[index]
+                if (cached != null && !cached.isRecycled) return cached
+
+                val renderer = pdfRenderer ?: return null
+                if (index >= renderer.pageCount) return null
+
+                val page = runCatching { renderer.openPage(index) }.getOrNull() ?: return null
+                return try {
+                    val target = pdfPageTargetSize(page.width, page.height)
+                    val bitmap = Bitmap.createBitmap(target.first, target.second, Bitmap.Config.ARGB_8888)
+                    bitmap.eraseColor(Color.WHITE)
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    pageBitmapCache[index] = bitmap
+                    bitmap
+                } finally {
+                    page.close()
+                }
+            }
+
+            override fun getPageStrokes(index: Int): List<Stroke> {
+                return pageStrokesMap[index] ?: emptyList()
+            }
+
+            override fun onPageStrokesChanged(index: Int, strokes: List<Stroke>) {
+                pageStrokesMap[index] = strokes
+                scheduleAutosave()
+                canvasView.invalidate()
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -229,7 +306,11 @@ class MainActivity : AppCompatActivity() {
 
     private suspend fun persistCurrentPage() {
         val page = currentPage ?: return
-        val strokes = canvasView.getStrokesCopy()
+        val strokes = if (canvasView.isContinuousActive) {
+            pageStrokesMap[currentPageIndex] ?: canvasView.getStrokesCopy()
+        } else {
+            canvasView.getStrokesCopy()
+        }
         pageStrokesMap[currentPageIndex] = strokes
         viewModel.savePage(page, strokes)
     }
@@ -268,8 +349,19 @@ class MainActivity : AppCompatActivity() {
         btnPressure.text = if (canvasView.pressureEnabled) "Pressão ON" else "Pressão OFF"
 
         updateEraserModeButton()
+        updateViewModeButton()
         updateStrokeControls()
         updatePageIndicator()
+    }
+
+    private fun updateViewModeButton() {
+        if (canvasView.viewMode == DocumentViewMode.CONTINUOUS) {
+            btnViewMode.text = "Rolo 📜"
+            btnViewMode.backgroundTintList = ColorStateList.valueOf(COLOR_ACCENT)
+        } else {
+            btnViewMode.text = "Página 📄"
+            btnViewMode.backgroundTintList = ColorStateList.valueOf(COLOR_TOOL_IDLE)
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -293,29 +385,56 @@ class MainActivity : AppCompatActivity() {
             showNotebooksDialog()
         }
 
-        // Navegação de páginas conforme o item 4 do requisito:
+        // Alterna entre Rolo Contínuo e Página Única
+        btnViewMode.setOnClickListener {
+            val nextMode = canvasView.viewMode.toggle()
+            canvasView.viewMode = nextMode
+            updateViewModeButton()
+
+            if (nextMode == DocumentViewMode.CONTINUOUS) {
+                canvasView.scrollToPage(currentPageIndex)
+                Toast.makeText(this, "Modo Rolo Contínuo ativado (role para cima/baixo)", Toast.LENGTH_SHORT).show()
+            } else {
+                renderCurrentPage()
+                Toast.makeText(this, "Modo Página Única ativado (use ◀ e ▶)", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // Navegação de páginas (funciona tanto no modo Página quanto rola no modo Contínuo)
         btnPrevPage.setOnClickListener {
             if (currentPageIndex > 0) {
-                // Salve os traços da página atual no mapa em memória
-                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
-                // Atualize currentPageIndex garantindo [0, totalPages - 1]
+                if (!canvasView.isContinuousActive) {
+                    pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                }
                 currentPageIndex = (currentPageIndex - 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
-                renderCurrentPage()
+                if (canvasView.isContinuousActive) {
+                    canvasView.scrollToPage(currentPageIndex)
+                    updatePageIndicator()
+                } else {
+                    renderCurrentPage()
+                }
             }
         }
 
         btnNextPage.setOnClickListener {
             if (currentPageIndex < totalPages - 1) {
-                // Salve os traços da página atual no mapa em memória
-                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
-                // Atualize currentPageIndex garantindo [0, totalPages - 1]
+                if (!canvasView.isContinuousActive) {
+                    pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                }
                 currentPageIndex = (currentPageIndex + 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
-                renderCurrentPage()
+                if (canvasView.isContinuousActive) {
+                    canvasView.scrollToPage(currentPageIndex)
+                    updatePageIndicator()
+                } else {
+                    renderCurrentPage()
+                }
             }
         }
 
         btnAddPage.setOnClickListener {
-            pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            if (!canvasView.isContinuousActive) {
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            }
             if (pdfRenderer == null && currentNotebook != null) {
                 lifecycleScope.launch {
                     val notebook = currentNotebook ?: return@launch
@@ -333,7 +452,12 @@ class MainActivity : AppCompatActivity() {
             } else {
                 totalPages++
                 currentPageIndex = totalPages - 1
-                renderCurrentPage()
+                if (canvasView.isContinuousActive) {
+                    canvasView.scrollToPage(currentPageIndex)
+                    updatePageIndicator()
+                } else {
+                    renderCurrentPage()
+                }
             }
         }
 
@@ -348,7 +472,9 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnUndo).setOnClickListener {
             canvasView.undo()
-            pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            if (!canvasView.isContinuousActive) {
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            }
             scheduleAutosave()
         }
 
@@ -681,7 +807,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------------------
-    // Correção Crítica do PDF Multi-Páginas (PdfRenderer + renderCurrentPage)
+    // Importação e renderização de PDF Multi-Páginas
     // ---------------------------------------------------------------------
 
     private fun importPdf(uri: Uri) {
@@ -690,6 +816,7 @@ class MainActivity : AppCompatActivity() {
                 saveCurrentPage()
                 closeCurrentPdf()
                 pageStrokesMap.clear()
+                pageBitmapCache.clear()
 
                 val displayName = queryDisplayName(uri) ?: "PDF Importado"
                 tvNotebookTitle.text = displayName.removeSuffix(".pdf")
@@ -707,12 +834,17 @@ class MainActivity : AppCompatActivity() {
                 val renderer = PdfRenderer(pfd)
                 pdfRenderer = renderer
 
-                // Ao carregar um PDF com PdfRenderer, leia pdfRenderer.pageCount
-                // e atualize a variável totalPages com a quantidade exata de páginas do documento
                 totalPages = renderer.pageCount
                 currentPageIndex = 0
 
-                renderCurrentPage()
+                if (canvasView.viewMode == DocumentViewMode.CONTINUOUS) {
+                    canvasView.fitPageToScreen()
+                    canvasView.invalidate()
+                    updatePageIndicator()
+                } else {
+                    renderCurrentPage()
+                }
+
                 Toast.makeText(this@MainActivity, "PDF aberto ($totalPages páginas)", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 Toast.makeText(this@MainActivity, "Erro ao carregar PDF: ${e.message}", Toast.LENGTH_LONG).show()
@@ -721,24 +853,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Renderiza a página correspondente do PDF com PdfRenderer.
-     * 1. Fecha a página anterior do PdfRenderer e abre pdfRenderer.openPage(currentPageIndex).
-     * 2. Renderiza o Bitmap da página correspondente.
-     * 3. Passa para canvasView.setPageContent(bitmap, pageStrokesMap[currentPageIndex]).
-     * 4. Atualiza o indicador de texto: tvPageIndicator.text = "Pág ${currentPageIndex + 1}/$totalPages".
-     * 5. Desabilita visualmente o botão anterior na página 1 e o próximo na última página.
+     * Renderiza a página correspondente no modo Página Única.
      */
     private fun renderCurrentPage() {
         val renderer = pdfRenderer
         if (renderer != null && currentPageIndex < renderer.pageCount) {
-            // 1. Fecha a página anterior do PdfRenderer e abre a página atual
             currentPdfPage?.close()
             currentPdfPage = null
 
             val page = renderer.openPage(currentPageIndex)
             currentPdfPage = page
 
-            // 2. Renderiza o Bitmap da página correspondente
             val size = pdfPageTargetSize(page.width, page.height)
             val bitmap = Bitmap.createBitmap(size.first, size.second, Bitmap.Config.ARGB_8888)
             bitmap.eraseColor(Color.WHITE)
@@ -747,7 +872,6 @@ class MainActivity : AppCompatActivity() {
             currentPageBitmap?.recycle()
             currentPageBitmap = bitmap
 
-            // 3. Passa para canvasView.setPageContent(bitmap, pageStrokesMap[currentPageIndex])
             val strokes = pageStrokesMap[currentPageIndex] ?: emptyList()
             canvasView.setPageContent(bitmap, strokes)
         } else {
@@ -755,10 +879,8 @@ class MainActivity : AppCompatActivity() {
             canvasView.setPageContent(null, strokes)
         }
 
-        // 4. Atualiza o indicador de texto: tvPageIndicator.text = "Pág ${currentPageIndex + 1}/$totalPages"
         tvPageIndicator.text = "Pág ${currentPageIndex + 1}/$totalPages"
 
-        // 5. Desabilita visualmente o botão anterior na página 1 e o próximo na última página
         val hasPrevious = currentPageIndex > 0
         val hasNext = currentPageIndex < totalPages - 1
         btnPrevPage.isEnabled = hasPrevious
@@ -768,14 +890,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Exportação de Todas as Páginas combinando o fundo do PDF com os traços
-     * anotados no mapa em memória (pageStrokesMap[i]).
+     * Exportação de Todas as Páginas combinando o fundo do PDF com os traços.
      */
     private fun exportAnnotatedPdfToUri(uri: Uri) {
         lifecycleScope.launch {
             try {
-                // Antes de exportar, salva os traços da página atual no mapa
-                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                if (!canvasView.isContinuousActive) {
+                    pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                }
 
                 val renderer = pdfRenderer
                 val pressure = canvasView.pressureEnabled
@@ -785,7 +907,6 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.IO) {
                     val document = PdfDocument()
                     try {
-                        // Fecha página aberta do PdfRenderer antes de abrir páginas sequenciais na exportação
                         currentPdfPage?.close()
                         currentPdfPage = null
 
@@ -842,7 +963,6 @@ class MainActivity : AppCompatActivity() {
                                     pdfPage.close()
                                 }
                             } else {
-                                // Modo folha de caderno padrão
                                 val width = PageTemplate.DEFAULT_WIDTH
                                 val height = PageTemplate.DEFAULT_HEIGHT
                                 val pdfSize = pdfPageSize(width, height)
@@ -874,8 +994,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Reabre a visualização da página corrente após a exportação
-                renderCurrentPage()
+                if (canvasView.isContinuousActive) {
+                    canvasView.invalidate()
+                } else {
+                    renderCurrentPage()
+                }
                 Toast.makeText(this@MainActivity, "PDF exportado com sucesso ($totalPages páginas)!", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Toast.makeText(this@MainActivity, "Erro ao exportar PDF: ${e.message}", Toast.LENGTH_LONG).show()
@@ -950,6 +1073,8 @@ class MainActivity : AppCompatActivity() {
         pdfDescriptor = null
         currentPageBitmap?.recycle()
         currentPageBitmap = null
+        pageBitmapCache.values.forEach { it.recycle() }
+        pageBitmapCache.clear()
         currentPdfTempFile?.delete()
         currentPdfTempFile = null
     }

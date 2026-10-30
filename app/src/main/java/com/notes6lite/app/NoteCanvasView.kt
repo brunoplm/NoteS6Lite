@@ -12,6 +12,7 @@ import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import com.notes6lite.app.domain.model.DocumentViewMode
 import com.notes6lite.app.domain.model.EraserMode
 import com.notes6lite.app.domain.model.InkPoint
 import com.notes6lite.app.domain.model.PageTemplate
@@ -385,7 +386,12 @@ class NoteCanvasView @JvmOverloads constructor(
             val scaleY = (height * 0.94f) / pageHeight.coerceAtLeast(1).toFloat()
             scaleFactor = min(scaleX, scaleY).coerceAtLeast(0.05f)
             translateX = (width - pageWidth * scaleFactor) / 2f
-            translateY = max(24f, (height - pageHeight * scaleFactor) / 2f)
+            if (isContinuousActive) {
+                val currentTop = getContinuousPageTop(activeContinuousPageIndex)
+                translateY = 24f - currentTop * scaleFactor
+            } else {
+                translateY = max(24f, (height - pageHeight * scaleFactor) / 2f)
+            }
         }
 
         updateMatrix()
@@ -551,8 +557,15 @@ class NoteCanvasView @JvmOverloads constructor(
         smoothedPressure = if (rawPressure < 0.05f) 0.05f else rawPressure
 
         mapToPage(event.getX(pointerIndex), event.getY(pointerIndex), tempPoint)
-        lastPageX = tempPoint[0]
-        lastPageY = tempPoint[1]
+        val docX = tempPoint[0]
+        val docY = tempPoint[1]
+
+        val targetPage = if (isContinuousActive) getContinuousPageIndexAt(docY) else 0
+        activeContinuousPageIndex = targetPage
+        val pageTop = if (isContinuousActive) getContinuousPageTop(targetPage) else 0f
+
+        lastPageX = docX
+        lastPageY = docY - pageTop
 
         // Reinicia a medição de velocidade da borracha.
         lastEraserScreenX = event.getX(pointerIndex)
@@ -570,7 +583,11 @@ class NoteCanvasView @JvmOverloads constructor(
 
         if (objectEraser) {
             // Borracha de objeto não grava tinta: remove os traços tocados.
-            eraseStrokesAt(lastPageX, lastPageY, eraserPreviewRadius, lastPageX, lastPageY)
+            if (isContinuousActive) {
+                eraseStrokesOnContinuousPage(activeContinuousPageIndex, lastPageX, lastPageY, eraserPreviewRadius, lastPageX, lastPageY)
+            } else {
+                eraseStrokesAt(lastPageX, lastPageY, eraserPreviewRadius, lastPageX, lastPageY)
+            }
             activeOutline = null
         } else {
             activePoints.add(InkPoint(lastPageX, lastPageY, smoothedPressure))
@@ -605,6 +622,7 @@ class NoteCanvasView @JvmOverloads constructor(
             return
         }
 
+        val pageTop = if (isContinuousActive) getContinuousPageTop(activeContinuousPageIndex) else 0f
         // Pontos históricos do digitalizador: base do zero lag da S-Pen.
         val historySize = event.historySize
         for (h in 0 until historySize) {
@@ -615,13 +633,13 @@ class NoteCanvasView @JvmOverloads constructor(
             )
             appendPoint(
                 tempPoint[0],
-                tempPoint[1],
+                tempPoint[1] - pageTop,
                 event.getHistoricalPressure(pointerIndex, h)
             )
         }
 
         mapToPage(event.getX(pointerIndex), event.getY(pointerIndex), tempPoint)
-        appendPoint(tempPoint[0], tempPoint[1], event.getPressure(pointerIndex))
+        appendPoint(tempPoint[0], tempPoint[1] - pageTop, event.getPressure(pointerIndex))
 
         if (activeMode == ToolMode.ERASER) {
             // A borracha precisa usa a velocidade do gesto para engordar.
@@ -660,12 +678,16 @@ class NoteCanvasView @JvmOverloads constructor(
         var previousX = lastPageX
         var previousY = lastPageY
 
+        val pageTop = if (isContinuousActive) getContinuousPageTop(activeContinuousPageIndex) else 0f
+
         for (h in 0 until historySize) {
             mapToPage(
                 event.getHistoricalX(pointerIndex, h),
                 event.getHistoricalY(pointerIndex, h),
                 tempPoint
             )
+            val curX = tempPoint[0]
+            val curY = tempPoint[1] - pageTop
             val scale = updateEraserSpeed(
                 event.eventTime,
                 event.getHistoricalX(pointerIndex, h),
@@ -673,18 +695,31 @@ class NoteCanvasView @JvmOverloads constructor(
             )
             eraserSpeedScale = scale
             eraserPreviewRadius = eraserRadiusFor(scale)
-            eraseStrokesAt(
-                tempPoint[0],
-                tempPoint[1],
-                eraserPreviewRadius,
-                previousX,
-                previousY
-            )
-            previousX = tempPoint[0]
-            previousY = tempPoint[1]
+            if (isContinuousActive) {
+                eraseStrokesOnContinuousPage(
+                    activeContinuousPageIndex,
+                    curX,
+                    curY,
+                    eraserPreviewRadius,
+                    previousX,
+                    previousY
+                )
+            } else {
+                eraseStrokesAt(
+                    curX,
+                    curY,
+                    eraserPreviewRadius,
+                    previousX,
+                    previousY
+                )
+            }
+            previousX = curX
+            previousY = curY
         }
 
         mapToPage(event.getX(pointerIndex), event.getY(pointerIndex), tempPoint)
+        val curX = tempPoint[0]
+        val curY = tempPoint[1] - pageTop
         val scale = updateEraserSpeed(
             event.eventTime,
             event.getX(pointerIndex),
@@ -692,12 +727,16 @@ class NoteCanvasView @JvmOverloads constructor(
         )
         eraserSpeedScale = scale
         eraserPreviewRadius = eraserRadiusFor(scale)
-        eraserPreviewX = tempPoint[0]
-        eraserPreviewY = tempPoint[1]
-        eraseStrokesAt(tempPoint[0], tempPoint[1], eraserPreviewRadius, previousX, previousY)
+        eraserPreviewX = curX
+        eraserPreviewY = curY
+        if (isContinuousActive) {
+            eraseStrokesOnContinuousPage(activeContinuousPageIndex, curX, curY, eraserPreviewRadius, previousX, previousY)
+        } else {
+            eraseStrokesAt(curX, curY, eraserPreviewRadius, previousX, previousY)
+        }
 
-        lastPageX = tempPoint[0]
-        lastPageY = tempPoint[1]
+        lastPageX = curX
+        lastPageY = curY
         invalidate()
     }
 
@@ -841,8 +880,12 @@ class NoteCanvasView @JvmOverloads constructor(
                 mode = data.mode,
                 pressureEnabled = pressureEnabled
             )
-            strokes.add(PageStroke(data, outline))
-            if (activeMode == ToolMode.ERASER) hasEraserStrokes = true
+            if (isContinuousActive) {
+                addStrokeToContinuousPage(activeContinuousPageIndex, PageStroke(data, outline))
+            } else {
+                strokes.add(PageStroke(data, outline))
+                if (activeMode == ToolMode.ERASER) hasEraserStrokes = true
+            }
         }
 
         activePoints.clear()
@@ -921,7 +964,9 @@ class NoteCanvasView @JvmOverloads constructor(
         inverseMatrix.mapRect(visibleRect)
 
         // 1. Fundo: template/estilo ou PDF. Nunca recebe a borracha.
-        if (pageTemplate.isInfinite) {
+        if (isContinuousActive) {
+            drawContinuousContent(canvas, visibleRect)
+        } else if (pageTemplate.isInfinite) {
             sheetPainter.drawInfinite(canvas, visibleRect)
         } else {
             pageRect.set(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat())
@@ -930,39 +975,57 @@ class NoteCanvasView @JvmOverloads constructor(
 
         // 2. Camada isolada de tinta: a borracha só apaga aqui.
         // Sem traços de borracha, desenhar direto evita um saveLayer por frame.
-        val needsInkLayer = hasEraserStrokes ||
-            (isStylusDrawing && activeMode == ToolMode.ERASER)
-        val layerBounds: RectF? = if (pageTemplate.isInfinite) null else pageRect
-        val layerId = if (needsInkLayer) canvas.saveLayer(layerBounds, null) else -1
+        if (!isContinuousActive) {
+            val needsInkLayer = hasEraserStrokes ||
+                (isStylusDrawing && activeMode == ToolMode.ERASER)
+            val layerBounds: RectF? = if (pageTemplate.isInfinite) null else pageRect
+            val layerId = if (needsInkLayer) canvas.saveLayer(layerBounds, null) else -1
 
-        for (pageStroke in strokes) {
-            if (RectF.intersects(pageStroke.outline.bounds, visibleRect)) {
-                inkPainter.draw(
-                    canvas,
-                    pageStroke.outline,
-                    getEffectiveInkColor(pageStroke.data.color),
-                    pageStroke.data.mode
+            for (pageStroke in strokes) {
+                if (RectF.intersects(pageStroke.outline.bounds, visibleRect)) {
+                    inkPainter.draw(
+                        canvas,
+                        pageStroke.outline,
+                        getEffectiveInkColor(pageStroke.data.color),
+                        pageStroke.data.mode
+                    )
+                }
+            }
+
+            activeOutline?.let { outline ->
+                inkPainter.draw(canvas, outline, getEffectiveInkColor(activeColor), activeMode)
+            }
+
+            // Preview do raio da borracha
+            if (isStylusDrawing && activeMode == ToolMode.ERASER && eraserPreviewRadius > 0f) {
+                canvas.drawCircle(
+                    eraserPreviewX,
+                    eraserPreviewY,
+                    eraserPreviewRadius,
+                    eraserPreviewPaint
                 )
             }
-        }
 
-        activeOutline?.let { outline ->
-            inkPainter.draw(canvas, outline, getEffectiveInkColor(activeColor), activeMode)
-        }
-
-        // Preview do raio da borracha: o CLEAR é invisível, então o círculo
-        // mostra exatamente a área que está sendo apagada.
-        if (isStylusDrawing && activeMode == ToolMode.ERASER && eraserPreviewRadius > 0f) {
-            canvas.drawCircle(
-                eraserPreviewX,
-                eraserPreviewY,
-                eraserPreviewRadius,
-                eraserPreviewPaint
-            )
-        }
-
-        if (needsInkLayer) {
-            canvas.restoreToCount(layerId)
+            if (needsInkLayer) {
+                canvas.restoreToCount(layerId)
+            }
+        } else {
+            // Desenho do traço ativo durante a escrita na página correspondente
+            activeOutline?.let { outline ->
+                val pageTop = getContinuousPageTop(activeContinuousPageIndex)
+                canvas.save()
+                canvas.translate(0f, pageTop)
+                inkPainter.draw(canvas, outline, getEffectiveInkColor(activeColor), activeMode)
+                if (isStylusDrawing && activeMode == ToolMode.ERASER && eraserPreviewRadius > 0f) {
+                    canvas.drawCircle(
+                        eraserPreviewX,
+                        eraserPreviewY,
+                        eraserPreviewRadius,
+                        eraserPreviewPaint
+                    )
+                }
+                canvas.restore()
+            }
         }
         canvas.restore()
     }
@@ -1095,7 +1158,186 @@ class NoteCanvasView @JvmOverloads constructor(
         overlay.recycle()
     }
 
+    // ---------------------------------------------------------------------
+    // Métodos Auxiliares para o Modo de Rolagem Contínua (DocumentViewMode.CONTINUOUS)
+    // ---------------------------------------------------------------------
+
+    fun scrollToPage(pageIndex: Int) {
+        if (!isContinuousActive) return
+        val top = getContinuousPageTop(pageIndex)
+        translateY = 24f - top * scaleFactor
+        updateMatrix()
+        invalidate()
+    }
+
+    private fun getContinuousPageTop(pageIndex: Int): Float {
+        val provider = continuousProvider ?: return 0f
+        var currentY = 0f
+        val count = provider.getPageCount()
+        for (i in 0 until pageIndex.coerceAtMost(count)) {
+            currentY += provider.getPageHeight(i) + CONTINUOUS_PAGE_SPACING
+        }
+        return currentY
+    }
+
+    private fun getContinuousPageIndexAt(docY: Float): Int {
+        val provider = continuousProvider ?: return 0
+        val count = provider.getPageCount()
+        var currentY = 0f
+        for (i in 0 until count) {
+            val h = provider.getPageHeight(i)
+            if (docY <= currentY + h + CONTINUOUS_PAGE_SPACING / 2f) {
+                return i
+            }
+            currentY += h + CONTINUOUS_PAGE_SPACING
+        }
+        return (count - 1).coerceAtLeast(0)
+    }
+
+    private fun addStrokeToContinuousPage(pageIndex: Int, stroke: PageStroke) {
+        val provider = continuousProvider ?: return
+        val existing = provider.getPageStrokes(pageIndex).toMutableList()
+        existing.add(stroke.data)
+        provider.onPageStrokesChanged(pageIndex, existing)
+    }
+
+    private fun eraseStrokesOnContinuousPage(
+        pageIndex: Int,
+        x: Float,
+        y: Float,
+        radius: Float,
+        fromX: Float,
+        fromY: Float
+    ) {
+        val provider = continuousProvider ?: return
+        val currentStrokes = provider.getPageStrokes(pageIndex)
+        if (currentStrokes.isEmpty()) return
+
+        eraserHitPath.reset()
+        eraserHitPath.addCircle(x, y, radius, Path.Direction.CW)
+        if (abs(fromX - x) > 0.01f || abs(fromY - y) > 0.01f) {
+            eraserHitPath.addRoundRect(
+                min(fromX, x) - radius,
+                min(fromY, y) - radius,
+                max(fromX, x) + radius,
+                max(fromY, y) + radius,
+                radius,
+                radius,
+                Path.Direction.CW
+            )
+        }
+        eraserHitPath.computeBounds(eraserHitBounds, true)
+
+        val updated = ArrayList<Stroke>()
+        var removedAny = false
+        for (stroke in currentStrokes) {
+            val outline = StrokeOutlineBuilder.build(
+                stroke.points,
+                stroke.baseWidth,
+                stroke.mode,
+                pressureEnabled
+            )
+            if (!RectF.intersects(outline.bounds, eraserHitBounds)) {
+                updated.add(stroke)
+                continue
+            }
+            eraserScratchPath.reset()
+            val intersects = eraserScratchPath.op(outline.path, eraserHitPath, Path.Op.INTERSECT)
+            if (intersects && !eraserScratchPath.isEmpty) {
+                removedAny = true
+            } else {
+                updated.add(stroke)
+            }
+        }
+        if (removedAny) {
+            provider.onPageStrokesChanged(pageIndex, updated)
+        }
+    }
+
+    private fun drawContinuousContent(canvas: Canvas, visible: RectF) {
+        val provider = continuousProvider ?: return
+        val count = provider.getPageCount()
+        var currentY = 0f
+
+        val tempPageRect = RectF()
+        var mostVisiblePage = 0
+        var maxVisibleArea = -1f
+
+        for (i in 0 until count) {
+            val pw = provider.getPageWidth(i).toFloat()
+            val ph = provider.getPageHeight(i).toFloat()
+            tempPageRect.set(0f, currentY, pw, currentY + ph)
+
+            if (RectF.intersects(tempPageRect, visible)) {
+                // Cálculo de qual página está mais visível no centro da tela
+                val overlapTop = max(tempPageRect.top, visible.top)
+                val overlapBottom = min(tempPageRect.bottom, visible.bottom)
+                val visibleH = max(0f, overlapBottom - overlapTop)
+                if (visibleH > maxVisibleArea) {
+                    maxVisibleArea = visibleH
+                    mostVisiblePage = i
+                }
+
+                // Desenha o fundo da página
+                val pageBmp = provider.getPageBitmap(i)
+                canvas.save()
+                canvas.translate(0f, currentY)
+                val localRect = RectF(0f, 0f, pw, ph)
+                sheetPainter.drawPage(canvas, localRect, pageBmp)
+
+                // Desenha os traços já existentes desta página
+                val pageStrokes = provider.getPageStrokes(i)
+                for (st in pageStrokes) {
+                    val outline = StrokeOutlineBuilder.build(
+                        st.points,
+                        st.baseWidth,
+                        st.mode,
+                        pressureEnabled
+                    )
+                    inkPainter.draw(canvas, outline, getEffectiveInkColor(st.color), st.mode)
+                }
+                canvas.restore()
+            }
+            currentY += ph + CONTINUOUS_PAGE_SPACING
+        }
+
+        if (mostVisiblePage != activeContinuousPageIndex) {
+            activeContinuousPageIndex = mostVisiblePage
+            onPageChangedListener?.invoke(mostVisiblePage)
+        }
+    }
+
+    var viewMode: DocumentViewMode = DocumentViewMode.CONTINUOUS
+        set(value) {
+            if (field == value) return
+            field = value
+            fitPageToScreen()
+            invalidate()
+        }
+
+    /**
+     * Provedor de dados para páginas no modo de rolagem contínua.
+     */
+    interface ContinuousDocumentProvider {
+        fun getPageCount(): Int
+        fun getPageWidth(index: Int): Int
+        fun getPageHeight(index: Int): Int
+        fun getPageBitmap(index: Int): Bitmap?
+        fun getPageStrokes(index: Int): List<Stroke>
+        fun onPageStrokesChanged(index: Int, strokes: List<Stroke>)
+    }
+
+    var continuousProvider: ContinuousDocumentProvider? = null
+
+    val isContinuousActive: Boolean
+        get() = viewMode == DocumentViewMode.CONTINUOUS && (continuousProvider?.getPageCount() ?: 0) > 1
+
+    var onPageChangedListener: ((Int) -> Unit)? = null
+    var activeContinuousPageIndex: Int = 0
+        private set
+
     companion object {
+        const val CONTINUOUS_PAGE_SPACING = 36f
         val DEFAULT_INK_COLOR: Int = Color.parseColor("#111827")
         val DEFAULT_DARK_INK_COLOR: Int = Color.parseColor("#F8FAFC")
 
