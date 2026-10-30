@@ -11,5 +11,6 @@ data class Stroke(
     val points: List<InkPoint>,
     val color: Int,
     val baseWidth: Float,
-    val mode: ToolMode
+    val mode: ToolMode,
+    val penType: PenType = PenType.BALLPOINT
 )

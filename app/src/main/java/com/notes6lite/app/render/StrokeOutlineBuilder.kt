@@ -3,6 +3,7 @@ package com.notes6lite.app.render
 import android.graphics.Path
 import android.graphics.RectF
 import com.notes6lite.app.domain.model.InkPoint
+import com.notes6lite.app.domain.model.PenType
 import com.notes6lite.app.domain.model.ToolMode
 import kotlin.math.hypot
 import kotlin.math.sqrt
@@ -31,6 +32,7 @@ object StrokeOutlineBuilder {
         baseWidth: Float,
         mode: ToolMode,
         pressureEnabled: Boolean,
+        penType: PenType = PenType.BALLPOINT,
         reuse: StrokeOutline? = null
     ): StrokeOutline {
         val outline = reuse ?: StrokeOutline()
@@ -65,7 +67,8 @@ object StrokeOutlineBuilder {
                 pressure = p.pressure,
                 baseWidth = baseWidth,
                 usePressure = usePressure,
-                useEraserScale = useEraserScale
+                useEraserScale = useEraserScale,
+                penType = penType
             ) / 2f
             outline.path.addCircle(p.x, p.y, radius, Path.Direction.CW)
             outline.path.computeBounds(outline.bounds, true)
@@ -79,7 +82,8 @@ object StrokeOutlineBuilder {
                 pressure = pts[i].pressure,
                 baseWidth = baseWidth,
                 usePressure = usePressure,
-                useEraserScale = useEraserScale
+                useEraserScale = useEraserScale,
+                penType = penType
             )
         }
 
@@ -174,7 +178,8 @@ object StrokeOutlineBuilder {
         pressure: Float,
         baseWidth: Float,
         usePressure: Boolean,
-        useEraserScale: Boolean = false
+        useEraserScale: Boolean = false,
+        penType: PenType = PenType.BALLPOINT
     ): Float {
         if (useEraserScale) {
             // Multiplicador de raio da borracha dinâmica (1.0x .. 2.5x).
@@ -183,10 +188,20 @@ object StrokeOutlineBuilder {
         }
         if (!usePressure) return baseWidth
         val p = pressure.coerceIn(0f, 1f)
-        // Curva de resposta não linear: toque leve = traço fino,
-        // pressão forte = traço cheio, sem ficar "duro" no início.
-        val factor = 0.28f + 0.72f * sqrt(p)
-        return (baseWidth * factor).coerceAtLeast(0.75f)
+
+        return when (penType) {
+            PenType.BALLPOINT -> {
+                // Esferográfica: variação sutil, uniforme e precisa (0.6x a 1.2x)
+                val factor = 0.55f + 0.45f * sqrt(p)
+                (baseWidth * factor).coerceAtLeast(0.75f)
+            }
+            PenType.FOUNTAIN -> {
+                // Tinteiro: expressivo com ponta caligráfica, toque leve fino e toque firme encorpado (0.25x a 1.6x)
+                val factor = 0.22f + 1.38f * (p * p)
+                (baseWidth * factor).coerceAtLeast(0.5f)
+            }
+            PenType.HIGHLIGHTER -> baseWidth
+        }
     }
 
     /** Limite superior do crescimento da borracha por velocidade. */

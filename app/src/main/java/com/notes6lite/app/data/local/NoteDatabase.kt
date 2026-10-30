@@ -22,7 +22,7 @@ import com.notes6lite.app.data.local.entity.StrokeEntity
         StrokeEntity::class,
         FolderEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class NoteDatabase : RoomDatabase() {
@@ -69,6 +69,12 @@ abstract class NoteDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `pages` ADD COLUMN `textElementsJson` TEXT")
+            }
+        }
+
         @Volatile
         private var instance: NoteDatabase? = null
 
@@ -79,7 +85,7 @@ abstract class NoteDatabase : RoomDatabase() {
                     NoteDatabase::class.java,
                     DATABASE_NAME
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { instance = it }

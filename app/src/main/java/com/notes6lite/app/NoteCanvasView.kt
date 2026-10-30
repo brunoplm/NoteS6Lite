@@ -113,10 +113,15 @@ class NoteCanvasView @JvmOverloads constructor(
         }
 
     val isScratchpadActive: Boolean
-        get() = isSideScratchpadEnabled && backgroundBitmap != null
+        get() = isSideScratchpadEnabled && (backgroundBitmap != null || isContinuousActive)
 
     val effectivePageWidth: Int
-        get() = if (isScratchpadActive) (pageWidth * 1.55f).toInt() else pageWidth
+        get() = if (isScratchpadActive) {
+            val base = if (isContinuousActive) (continuousProvider?.getPageWidth(activeContinuousPageIndex) ?: pageWidth) else pageWidth
+            if (isContinuousActive) base else (base * 1.55f).toInt()
+        } else {
+            if (isContinuousActive) (continuousProvider?.getPageWidth(activeContinuousPageIndex) ?: pageWidth) else pageWidth
+        }
 
     // ---------------------------------------------------------------------
     // Elementos de Texto (Digitação no Canvas)
@@ -423,7 +428,8 @@ class NoteCanvasView @JvmOverloads constructor(
                         points = stroke.points,
                         baseWidth = stroke.baseWidth,
                         mode = stroke.mode,
-                        pressureEnabled = pressureEnabled
+                        pressureEnabled = pressureEnabled,
+                        penType = stroke.penType
                     )
                 )
             )
@@ -473,7 +479,8 @@ class NoteCanvasView @JvmOverloads constructor(
         } else {
             val effWidth = effectivePageWidth.coerceAtLeast(1).toFloat()
             val scaleX = (width * 0.94f) / effWidth
-            val scaleY = (height * 0.94f) / pageHeight.coerceAtLeast(1).toFloat()
+            val effHeight = if (isContinuousActive) (continuousProvider?.getPageHeight(activeContinuousPageIndex) ?: pageHeight).toFloat() else pageHeight.toFloat()
+            val scaleY = (height * 0.94f) / effHeight.coerceAtLeast(1f)
             scaleFactor = min(scaleX, scaleY).coerceAtLeast(0.05f)
             translateX = (width - effWidth * scaleFactor) / 2f
             if (isContinuousActive) {
@@ -536,7 +543,8 @@ class NoteCanvasView @JvmOverloads constructor(
                         points = stroke.points,
                         baseWidth = stroke.baseWidth,
                         mode = stroke.mode,
-                        pressureEnabled = pressureEnabled
+                        pressureEnabled = pressureEnabled,
+                        penType = stroke.penType
                     )
                 )
             )
@@ -556,13 +564,25 @@ class NoteCanvasView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val action = event.actionMasked
 
-        // Modo Texto: toque rápido na folha aciona digitação ou edição
-        if (currentToolMode == ToolMode.TEXT) {
+        // 1. Localiza qualquer ponteiro de S-Pen no evento.
+        var stylusIndex = -1
+        for (i in 0 until event.pointerCount) {
+            val toolType = event.getToolType(i)
+            if (toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER) {
+                stylusIndex = i
+                break
+            }
+        }
+
+        // Modo Texto: se não estiver usando a borracha física da caneta, toque rápido na folha digita
+        val isStylusEraser = stylusIndex != -1 && isStylusEraserEvent(event, stylusIndex)
+        if (currentToolMode == ToolMode.TEXT && !isStylusEraser) {
             when (action) {
                 MotionEvent.ACTION_DOWN -> {
                     textDownX = event.x
                     textDownY = event.y
                     isPotentialTextTap = true
+                    return true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (hypot(event.x - textDownX, event.y - textDownY) > 20f) {
@@ -572,8 +592,9 @@ class NoteCanvasView @JvmOverloads constructor(
                 MotionEvent.ACTION_UP -> {
                     if (isPotentialTextTap && hypot(event.x - textDownX, event.y - textDownY) < 20f) {
                         mapToPage(event.x, event.y, tempPoint)
+                        val pageTop = if (isContinuousActive) getContinuousPageTop(activeContinuousPageIndex) else 0f
                         val pageX = tempPoint[0]
-                        val pageY = tempPoint[1]
+                        val pageY = tempPoint[1] - pageTop
                         val hit = textElements.findLast { el ->
                             val textBoundsW = max(el.fontSize * el.text.length * 0.6f, 60f)
                             val textBoundsH = max(el.fontSize * 1.5f, 40f)
@@ -588,16 +609,6 @@ class NoteCanvasView @JvmOverloads constructor(
                         return true
                     }
                 }
-            }
-        }
-
-        // 1. Localiza qualquer ponteiro de S-Pen no evento.
-        var stylusIndex = -1
-        for (i in 0 until event.pointerCount) {
-            val toolType = event.getToolType(i)
-            if (toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER) {
-                stylusIndex = i
-                break
             }
         }
 
@@ -721,7 +732,8 @@ class NoteCanvasView @JvmOverloads constructor(
                 points = activePoints,
                 baseWidth = activeBaseWidth,
                 mode = activeMode,
-                pressureEnabled = pressureEnabled
+                pressureEnabled = pressureEnabled,
+                penType = penType
             )
         }
         lastOutlineBuildTime = event.eventTime
@@ -787,6 +799,7 @@ class NoteCanvasView @JvmOverloads constructor(
                 baseWidth = activeBaseWidth,
                 mode = activeMode,
                 pressureEnabled = pressureEnabled,
+                penType = penType,
                 reuse = activeOutline
             )
             lastOutlineBuildTime = event.eventTime
@@ -997,13 +1010,15 @@ class NoteCanvasView @JvmOverloads constructor(
                 points = activePoints.toList(),
                 color = activeColor,
                 baseWidth = activeBaseWidth,
-                mode = activeMode
+                mode = activeMode,
+                penType = penType
             )
             val outline = StrokeOutlineBuilder.build(
                 points = data.points,
                 baseWidth = data.baseWidth,
                 mode = data.mode,
-                pressureEnabled = pressureEnabled
+                pressureEnabled = pressureEnabled,
+                penType = data.penType
             )
             if (isContinuousActive) {
                 addStrokeToContinuousPage(activeContinuousPageIndex, PageStroke(data, outline))
@@ -1152,19 +1167,22 @@ class NoteCanvasView @JvmOverloads constructor(
             }
         } else {
             // Desenho do traço ativo durante a escrita na página correspondente
+            val pageTop = getContinuousPageTop(activeContinuousPageIndex)
             activeOutline?.let { outline ->
-                val pageTop = getContinuousPageTop(activeContinuousPageIndex)
                 canvas.save()
                 canvas.translate(0f, pageTop)
                 inkPainter.draw(canvas, outline, getEffectiveInkColor(activeColor), activeMode)
-                if (isStylusDrawing && activeMode == ToolMode.ERASER && eraserPreviewRadius > 0f) {
-                    canvas.drawCircle(
-                        eraserPreviewX,
-                        eraserPreviewY,
-                        eraserPreviewRadius,
-                        eraserPreviewPaint
-                    )
-                }
+                canvas.restore()
+            }
+            if (isStylusDrawing && activeMode == ToolMode.ERASER && eraserPreviewRadius > 0f) {
+                canvas.save()
+                canvas.translate(0f, pageTop)
+                canvas.drawCircle(
+                    eraserPreviewX,
+                    eraserPreviewY,
+                    eraserPreviewRadius,
+                    eraserPreviewPaint
+                )
                 canvas.restore()
             }
         }
@@ -1192,6 +1210,13 @@ class NoteCanvasView @JvmOverloads constructor(
             if (removed.data.mode == ToolMode.ERASER) {
                 hasEraserStrokes = strokes.any { it.data.mode == ToolMode.ERASER }
             }
+            onStrokeCommitted?.invoke()
+            invalidate()
+            return
+        }
+
+        if (textElements.isNotEmpty()) {
+            textElements.removeAt(textElements.lastIndex)
             onStrokeCommitted?.invoke()
             invalidate()
         }
@@ -1270,7 +1295,8 @@ class NoteCanvasView @JvmOverloads constructor(
                 points = stroke.points,
                 baseWidth = stroke.baseWidth,
                 mode = stroke.mode,
-                pressureEnabled = pressure
+                pressureEnabled = pressure,
+                penType = stroke.penType
             )
             val colorToDraw = if (style.isDark && bgBitmap == null && (stroke.color == Color.BLACK || stroke.color == DEFAULT_INK_COLOR || Color.luminance(stroke.color) < 0.25f)) {
                 DEFAULT_DARK_INK_COLOR
@@ -1310,7 +1336,8 @@ class NoteCanvasView @JvmOverloads constructor(
                 points = stroke.points,
                 baseWidth = stroke.baseWidth,
                 mode = stroke.mode,
-                pressureEnabled = pressure
+                pressureEnabled = pressure,
+                penType = stroke.penType
             )
             val colorToDraw = if (style.isDark && (stroke.color == Color.BLACK || stroke.color == DEFAULT_INK_COLOR || Color.luminance(stroke.color) < 0.25f)) {
                 DEFAULT_DARK_INK_COLOR
@@ -1400,7 +1427,8 @@ class NoteCanvasView @JvmOverloads constructor(
                 stroke.points,
                 stroke.baseWidth,
                 stroke.mode,
-                pressureEnabled
+                pressureEnabled,
+                stroke.penType
             )
             if (!RectF.intersects(outline.bounds, eraserHitBounds)) {
                 updated.add(stroke)
@@ -1463,9 +1491,23 @@ class NoteCanvasView @JvmOverloads constructor(
                         st.points,
                         st.baseWidth,
                         st.mode,
-                        pressureEnabled
+                        pressureEnabled,
+                        st.penType
                     )
                     inkPainter.draw(canvas, outline, getEffectiveInkColor(st.color), st.mode)
+                }
+
+                // Desenha textos desta página no modo contínuo
+                val pageTexts = provider.getPageTextElements(i)
+                for (el in pageTexts) {
+                    textPaint.textSize = el.fontSize
+                    textPaint.color = getEffectiveInkColor(el.color)
+                    val lines = el.text.split("\n")
+                    var lineY = el.y + el.fontSize
+                    for (line in lines) {
+                        canvas.drawText(line, el.x, lineY, textPaint)
+                        lineY += el.fontSize * 1.3f
+                    }
                 }
                 canvas.restore()
             }
@@ -1496,6 +1538,7 @@ class NoteCanvasView @JvmOverloads constructor(
         fun getPageBitmap(index: Int): Bitmap?
         fun getPageStrokes(index: Int): List<Stroke>
         fun onPageStrokesChanged(index: Int, strokes: List<Stroke>)
+        fun getPageTextElements(index: Int): List<TextElement> = emptyList()
     }
 
     var continuousProvider: ContinuousDocumentProvider? = null

@@ -4,6 +4,7 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
@@ -20,12 +21,14 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.notes6lite.app.data.local.NoteDatabase
+import com.notes6lite.app.data.local.TextElementCodec
 import com.notes6lite.app.data.repository.NotebookRepository
 import com.notes6lite.app.domain.model.ColorScheme
 import com.notes6lite.app.domain.model.DocumentViewMode
@@ -126,6 +129,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etSummaryContent: EditText
     private var summaryAutosaveJob: Job? = null
     private var isSummaryExpanded = false
+    private var isProgrammaticTextChange = false
 
     private enum class CategoryTab {
         PEN, ERASER, TEXT, BACKGROUND, PAGE_PDF
@@ -146,7 +150,10 @@ class MainActivity : AppCompatActivity() {
     private var pdfDescriptor: ParcelFileDescriptor? = null
     private var currentPdfPage: PdfRenderer.Page? = null
     private var currentPdfTempFile: File? = null
+
+    // Mapas em memória indexados por página para isolamento estrito
     private val pageStrokesMap = HashMap<Int, List<Stroke>>()
+    private val pageTextElementsMap = HashMap<Int, List<TextElement>>()
     private val pageBitmapCache = HashMap<Int, Bitmap>()
     private var currentPageBitmap: Bitmap? = null
 
@@ -183,17 +190,36 @@ class MainActivity : AppCompatActivity() {
         updateViewModeButton()
         updateSideScratchpadButton()
 
+        onBackPressedDispatcher.addCallback(this) {
+            if (cardSummaryPanel.visibility == View.VISIBLE) {
+                cardSummaryPanel.visibility = View.GONE
+                btnSummaryPill.visibility = View.VISIBLE
+            } else {
+                finish()
+            }
+        }
+
         canvasView.onStrokeCommitted = {
             if (!canvasView.isContinuousActive) {
                 pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
             }
             scheduleAutosave()
         }
 
         canvasView.onPageChangedListener = { newIndex ->
             if (currentPageIndex != newIndex) {
+                // Guarda textos e traços da página anterior antes da troca
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
+
                 currentPageIndex = newIndex
                 updatePageIndicator()
+
+                // Atualiza os textos da página atual
+                canvasView.textElements.clear()
+                canvasView.textElements.addAll(pageTextElementsMap[newIndex] ?: emptyList())
+                canvasView.invalidate()
             }
         }
 
@@ -295,6 +321,7 @@ class MainActivity : AppCompatActivity() {
             canvasView.undo()
             if (!canvasView.isContinuousActive) {
                 pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
             }
             scheduleAutosave()
         }
@@ -358,7 +385,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupSubBarControls() {
-        // Caneta: tipos
+        // Caneta: tipos (Esferográfica, Tinteiro, Marca-texto)
         btnPenBallpoint.setOnClickListener {
             canvasView.penType = PenType.BALLPOINT
             updatePenTypeButtons(PenType.BALLPOINT)
@@ -372,6 +399,10 @@ class MainActivity : AppCompatActivity() {
         btnPenHighlighter.setOnClickListener {
             canvasView.penType = PenType.HIGHLIGHTER
             updatePenTypeButtons(PenType.HIGHLIGHTER)
+            // Se a cor atual for preta escura, adota amarelo padrão para não sujar o texto
+            if (Color.luminance(canvasView.currentColor) < 0.25f) {
+                setInkColor(Color.parseColor("#FACC15"))
+            }
             updateStrokeControls()
         }
 
@@ -427,6 +458,7 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton("Limpar") { _, _ ->
                     canvasView.clearPageStrokes()
                     pageStrokesMap[currentPageIndex] = emptyList()
+                    pageTextElementsMap[currentPageIndex] = emptyList()
                     scheduleAutosave()
                 }
                 .setNegativeButton("Cancelar", null)
@@ -474,6 +506,9 @@ class MainActivity : AppCompatActivity() {
             updateSideScratchpadButton()
             if (canvasView.isContinuousActive) {
                 canvasView.fitPageToScreen()
+                canvasView.invalidate()
+            } else {
+                renderCurrentPage()
             }
             Toast.makeText(
                 this,
@@ -485,6 +520,7 @@ class MainActivity : AppCompatActivity() {
             if (currentPageIndex > 0) {
                 if (!canvasView.isContinuousActive) {
                     pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                    pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
                 }
                 currentPageIndex = (currentPageIndex - 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
                 if (canvasView.isContinuousActive) {
@@ -499,6 +535,7 @@ class MainActivity : AppCompatActivity() {
             if (currentPageIndex < totalPages - 1) {
                 if (!canvasView.isContinuousActive) {
                     pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                    pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
                 }
                 currentPageIndex = (currentPageIndex + 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
                 if (canvasView.isContinuousActive) {
@@ -510,10 +547,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         btnAddPage.setOnClickListener {
+            if (pdfRenderer != null) {
+                Toast.makeText(this, "Não é possível adicionar páginas a um arquivo PDF.", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             if (!canvasView.isContinuousActive) {
                 pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
             }
-            if (pdfRenderer == null && currentNotebook != null) {
+            if (currentNotebook != null) {
                 lifecycleScope.launch {
                     val notebook = currentNotebook ?: return@launch
                     val nextIndex = totalPages
@@ -527,15 +569,6 @@ class MainActivity : AppCompatActivity() {
                     currentPageIndex = nextIndex
                     loadNotebookPage(nextIndex)
                 }
-            } else {
-                totalPages++
-                currentPageIndex = totalPages - 1
-                if (canvasView.isContinuousActive) {
-                    canvasView.scrollToPage(currentPageIndex)
-                    updatePageIndicator()
-                } else {
-                    renderCurrentPage()
-                }
             }
         }
         btnOpenPdf.setOnClickListener {
@@ -545,7 +578,7 @@ class MainActivity : AppCompatActivity() {
             if (pdfRenderer != null) {
                 AlertDialog.Builder(this)
                     .setTitle("Exportar PDF Anotado")
-                    .setMessage("Como deseja exportar?")
+                    .setMessage("Como deseja exportar o documento?")
                     .setPositiveButton("Com Rascunho Lateral") { _, _ ->
                         exportWithScratchpad = true
                         savePdfLauncher.launch("Estudo_Rascunho_${System.currentTimeMillis() / 1000}.pdf")
@@ -627,6 +660,7 @@ class MainActivity : AppCompatActivity() {
                             )
                         )
                     }
+                    pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
                     canvasView.invalidate()
                     scheduleAutosave()
                 }
@@ -636,6 +670,7 @@ class MainActivity : AppCompatActivity() {
         if (existing != null) {
             builder.setNeutralButton("Excluir") { _, _ ->
                 canvasView.textElements.remove(existing)
+                pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
                 canvasView.invalidate()
                 scheduleAutosave()
             }
@@ -681,6 +716,7 @@ class MainActivity : AppCompatActivity() {
         etSummaryContent.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (isProgrammaticTextChange) return
                 scheduleSummarySave()
             }
             override fun afterTextChanged(s: android.text.Editable?) {}
@@ -692,11 +728,13 @@ class MainActivity : AppCompatActivity() {
         tvSummaryTitle.text = "📝 [Resumo] ${nb.title}"
         lifecycleScope.launch {
             val summaryNote = viewModel.getSummaryNote(nb.id)
+            isProgrammaticTextChange = true
             if (summaryNote != null) {
                 etSummaryContent.setText(summaryNote.summaryText ?: "")
             } else {
                 etSummaryContent.setText("")
             }
+            isProgrammaticTextChange = false
         }
     }
 
@@ -704,10 +742,14 @@ class MainActivity : AppCompatActivity() {
         summaryAutosaveJob?.cancel()
         summaryAutosaveJob = lifecycleScope.launch {
             delay(500)
-            val nb = currentNotebook ?: return@launch
-            val text = etSummaryContent.text.toString()
-            viewModel.saveSummary(nb.id, nb.title, text, nb.folderId)
+            flushSummarySave()
         }
+    }
+
+    private suspend fun flushSummarySave() {
+        val nb = currentNotebook ?: return
+        val text = etSummaryContent.text.toString()
+        viewModel.saveSummary(nb.id, nb.title, text, nb.folderId)
     }
 
     // ---------------------------------------------------------------------
@@ -774,6 +816,10 @@ class MainActivity : AppCompatActivity() {
                 scheduleAutosave()
                 canvasView.invalidate()
             }
+
+            override fun getPageTextElements(index: Int): List<TextElement> {
+                return pageTextElementsMap[index] ?: emptyList()
+            }
         }
     }
 
@@ -793,9 +839,11 @@ class MainActivity : AppCompatActivity() {
     private suspend fun openNotebook(id: Long) {
         autosaveJob?.cancelAndJoin()
         autosaveJob = null
+        flushSummarySave()
         saveCurrentPage()
         closeCurrentPdf()
         pageStrokesMap.clear()
+        pageTextElementsMap.clear()
 
         val notebook = viewModel.getNotebook(id) ?: return
         currentNotebook = notebook
@@ -833,6 +881,12 @@ class MainActivity : AppCompatActivity() {
             savedStrokes = snapshot.strokes
         )
 
+        // Restaura elementos de texto da página atual
+        val texts = TextElementCodec.decode(snapshot.page.textElementsJson)
+        canvasView.textElements.clear()
+        canvasView.textElements.addAll(texts)
+        pageTextElementsMap[index] = texts
+
         currentPage = snapshot.page
         pageStrokesMap[index] = canvasView.getStrokesCopy()
         updateToolbarState()
@@ -846,7 +900,12 @@ class MainActivity : AppCompatActivity() {
             canvasView.getStrokesCopy()
         }
         pageStrokesMap[currentPageIndex] = strokes
-        viewModel.savePage(page, strokes)
+
+        val texts = canvasView.textElements.toList()
+        pageTextElementsMap[currentPageIndex] = texts
+
+        val pageWithTexts = page.copy(textElementsJson = TextElementCodec.encode(texts))
+        viewModel.savePage(pageWithTexts, strokes)
     }
 
     private suspend fun saveCurrentPage() {
@@ -914,7 +973,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStrokeControls() {
         val width = currentToolWidth()
-        seekStroke.progress = width.roundToInt().coerceIn(1, 35)
+        val isHighlighter = canvasView.currentToolMode == ToolMode.HIGHLIGHTER || canvasView.penType == PenType.HIGHLIGHTER
+        if (isHighlighter) {
+            seekStroke.max = 60
+            seekStroke.progress = width.roundToInt().coerceIn(10, 60)
+        } else {
+            seekStroke.max = 35
+            seekStroke.progress = width.roundToInt().coerceIn(1, 35)
+        }
         tvStrokeValue.text = String.format(Locale.US, "%.1f", width)
     }
 
@@ -945,6 +1011,7 @@ class MainActivity : AppCompatActivity() {
             val width = presetPrefs.getFloat(keyWidth(index), defaults[index].width)
             val color = presetPrefs.getInt(keyColor(index), defaults[index].color)
             presets[index] = InkPreset(width, color)
+            presetButtons.getOrNull(index)?.backgroundTintList = ColorStateList.valueOf(color)
         }
     }
 
@@ -960,6 +1027,7 @@ class MainActivity : AppCompatActivity() {
         val width = currentToolWidth()
         val color = canvasView.currentColor
         presets[index] = InkPreset(width, color)
+        presetButtons.getOrNull(index)?.backgroundTintList = ColorStateList.valueOf(color)
         presetPrefs.edit()
             .putFloat(keyWidth(index), width)
             .putInt(keyColor(index), color)
@@ -1017,10 +1085,25 @@ class MainActivity : AppCompatActivity() {
                 saveCurrentPage()
                 closeCurrentPdf()
                 pageStrokesMap.clear()
+                pageTextElementsMap.clear()
                 pageBitmapCache.clear()
 
-                val displayName = queryDisplayName(uri) ?: "PDF Importado"
-                tvNotebookTitle.text = displayName.removeSuffix(".pdf")
+                val rawName = queryDisplayName(uri) ?: "PDF Importado"
+                val cleanTitle = rawName.removeSuffix(".pdf")
+                tvNotebookTitle.text = cleanTitle
+
+                // Vincula ou cria um Notebook no banco para associar o resumo deste PDF
+                val existingNote = viewModel.getNotebooks().find { it.title == cleanTitle }
+                if (existingNote != null) {
+                    currentNotebook = existingNote
+                } else {
+                    val newId = viewModel.createNotebook(
+                        title = cleanTitle,
+                        template = PageTemplate.A4,
+                        sheetStyle = SheetStyle.GRID
+                    )
+                    currentNotebook = viewModel.getNotebook(newId)
+                }
 
                 val tempFile = File(cacheDir, "doc_${System.currentTimeMillis()}.pdf")
                 withContext(Dispatchers.IO) {
@@ -1038,7 +1121,10 @@ class MainActivity : AppCompatActivity() {
                 totalPages = renderer.pageCount
                 currentPageIndex = 0
 
+                loadSummaryForCurrentNotebook()
+
                 if (canvasView.viewMode == DocumentViewMode.CONTINUOUS) {
+                    canvasView.scrollToPage(0)
                     canvasView.fitPageToScreen()
                     canvasView.invalidate()
                     updatePageIndicator()
@@ -1071,10 +1157,16 @@ class MainActivity : AppCompatActivity() {
             currentPageBitmap = bitmap
 
             val strokes = pageStrokesMap[currentPageIndex] ?: emptyList()
+            val texts = pageTextElementsMap[currentPageIndex] ?: emptyList()
             canvasView.setPageContent(bitmap, strokes)
+            canvasView.textElements.clear()
+            canvasView.textElements.addAll(texts)
         } else {
             val strokes = pageStrokesMap[currentPageIndex] ?: emptyList()
+            val texts = pageTextElementsMap[currentPageIndex] ?: emptyList()
             canvasView.setPageContent(null, strokes)
+            canvasView.textElements.clear()
+            canvasView.textElements.addAll(texts)
         }
 
         tvPageIndicator.text = "Pág ${currentPageIndex + 1}/$totalPages"
@@ -1092,6 +1184,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 if (!canvasView.isContinuousActive) {
                     pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                    pageTextElementsMap[currentPageIndex] = canvasView.textElements.toList()
                 }
 
                 val renderer = pdfRenderer
@@ -1107,6 +1200,7 @@ class MainActivity : AppCompatActivity() {
 
                         for (i in 0 until totalPages) {
                             val strokes = pageStrokesMap[i] ?: emptyList()
+                            val pageTexts = pageTextElementsMap[i] ?: (if (i == currentPageIndex) canvasView.textElements.toList() else emptyList())
 
                             if (renderer != null && i < renderer.pageCount) {
                                 val pdfPage = renderer.openPage(i)
@@ -1139,8 +1233,12 @@ class MainActivity : AppCompatActivity() {
                                     }
                                     pageBitmap.recycle()
 
+                                    // Renderiza traços com escala proporcional
                                     if (strokes.isNotEmpty()) {
                                         docPage.canvas.save()
+                                        if (!exportWithScratchpad) {
+                                            docPage.canvas.clipRect(0f, 0f, baseW.toFloat(), heightPt.toFloat())
+                                        }
                                         val scaleX = baseW.toFloat() / targetSize.first.toFloat()
                                         val scaleY = heightPt.toFloat() / targetSize.second.toFloat()
                                         docPage.canvas.scale(scaleX, scaleY)
@@ -1151,7 +1249,8 @@ class MainActivity : AppCompatActivity() {
                                                 points = stroke.points,
                                                 baseWidth = stroke.baseWidth,
                                                 mode = stroke.mode,
-                                                pressureEnabled = pressure
+                                                pressureEnabled = pressure,
+                                                penType = stroke.penType
                                             )
                                             val colorToDraw = if (canvasView.sheetStyle.isDark && (stroke.color == Color.BLACK || Color.luminance(stroke.color) < 0.25f)) {
                                                 NoteCanvasView.DEFAULT_DARK_INK_COLOR
@@ -1159,6 +1258,32 @@ class MainActivity : AppCompatActivity() {
                                                 stroke.color
                                             }
                                             ink.draw(docPage.canvas, outline, colorToDraw, stroke.mode)
+                                        }
+                                        docPage.canvas.restore()
+                                    }
+
+                                    // Renderiza elementos de texto inseridos
+                                    if (pageTexts.isNotEmpty()) {
+                                        docPage.canvas.save()
+                                        if (!exportWithScratchpad) {
+                                            docPage.canvas.clipRect(0f, 0f, baseW.toFloat(), heightPt.toFloat())
+                                        }
+                                        val scaleX = baseW.toFloat() / targetSize.first.toFloat()
+                                        val scaleY = heightPt.toFloat() / targetSize.second.toFloat()
+                                        docPage.canvas.scale(scaleX, scaleY)
+
+                                        val expPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                            typeface = android.graphics.Typeface.SANS_SERIF
+                                        }
+                                        for (el in pageTexts) {
+                                            expPaint.textSize = el.fontSize
+                                            expPaint.color = el.color
+                                            val lines = el.text.split("\n")
+                                            var lineY = el.y + el.fontSize
+                                            for (line in lines) {
+                                                docPage.canvas.drawText(line, el.x, lineY, expPaint)
+                                                lineY += el.fontSize * 1.3f
+                                            }
                                         }
                                         docPage.canvas.restore()
                                     }
@@ -1187,7 +1312,7 @@ class MainActivity : AppCompatActivity() {
                                     style = canvasView.sheetStyle,
                                     pressure = pressure,
                                     includeScratchpad = false,
-                                    texts = canvasView.textElements
+                                    texts = pageTexts
                                 )
                                 document.finishPage(docPage)
                             }
@@ -1267,6 +1392,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         lifecycleScope.launch(NonCancellable) {
+            flushSummarySave()
             saveCurrentPage()
             closeCurrentPdf()
         }

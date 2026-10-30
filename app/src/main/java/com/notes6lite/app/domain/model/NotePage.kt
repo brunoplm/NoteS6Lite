@@ -9,7 +9,8 @@ data class NotePage(
     val pageWidth: Int,
     val pageHeight: Int,
     val backgroundPath: String?,
-    val createdAt: Long
+    val createdAt: Long,
+    val textElementsJson: String? = null
 )
 
 data class PageSnapshot(

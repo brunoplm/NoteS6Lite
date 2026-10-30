@@ -408,7 +408,8 @@ class NotebookRepository(private val database: NoteDatabase) {
         pageWidth = pageWidth,
         pageHeight = pageHeight,
         backgroundPath = backgroundPath,
-        createdAt = createdAt
+        createdAt = createdAt,
+        textElementsJson = textElementsJson
     )
 
     private fun NotePage.toEntity() = PageEntity(
@@ -420,7 +421,8 @@ class NotebookRepository(private val database: NoteDatabase) {
         pageWidth = pageWidth,
         pageHeight = pageHeight,
         backgroundPath = backgroundPath,
-        createdAt = createdAt
+        createdAt = createdAt,
+        textElementsJson = textElementsJson
     )
 
     private fun StrokeEntity.toDomain() = Stroke(
