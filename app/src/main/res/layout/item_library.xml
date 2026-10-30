@@ -24,7 +24,7 @@
         android:ellipsize="end"
         android:maxLines="2"
         android:text="Nome"
-        android:textColor="#0F172A"
+        android:textColor="#F8FAFC"
         android:textSize="14sp"
         android:textStyle="bold" />
 
@@ -36,7 +36,7 @@
         android:ellipsize="end"
         android:maxLines="1"
         android:text="Pasta"
-        android:textColor="#64748B"
+        android:textColor="#94A3B8"
         android:textSize="11sp" />
 
 </LinearLayout>

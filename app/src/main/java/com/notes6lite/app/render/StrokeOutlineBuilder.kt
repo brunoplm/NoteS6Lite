@@ -53,9 +53,20 @@ object StrokeOutlineBuilder {
 
         val usePressure = pressureEnabled && mode == ToolMode.PEN
 
+        // Borracha dinâmica: em traços de borracha o campo `pressure` guarda o
+        // multiplicador de raio calculado pela velocidade do gesto (1.0x a
+        // 2.5x). Traços antigos gravados com pressão real (~0.5) caem no
+        // coerceIn(1f, ...) e continuam com o tamanho original.
+        val useEraserScale = mode == ToolMode.ERASER
+
         if (pts.size == 1) {
             val p = pts[0]
-            val radius = widthFor(p.pressure, baseWidth, usePressure) / 2f
+            val radius = widthFor(
+                pressure = p.pressure,
+                baseWidth = baseWidth,
+                usePressure = usePressure,
+                useEraserScale = useEraserScale
+            ) / 2f
             outline.path.addCircle(p.x, p.y, radius, Path.Direction.CW)
             outline.path.computeBounds(outline.bounds, true)
             return outline
@@ -64,7 +75,12 @@ object StrokeOutlineBuilder {
         val n = pts.size
         val widths = FloatArray(n)
         for (i in 0 until n) {
-            widths[i] = widthFor(pts[i].pressure, baseWidth, usePressure)
+            widths[i] = widthFor(
+                pressure = pts[i].pressure,
+                baseWidth = baseWidth,
+                usePressure = usePressure,
+                useEraserScale = useEraserScale
+            )
         }
 
         // Suavização da largura para evitar "serrilhado" de pressão.
@@ -154,7 +170,17 @@ object StrokeOutlineBuilder {
         return outline
     }
 
-    private fun widthFor(pressure: Float, baseWidth: Float, usePressure: Boolean): Float {
+    private fun widthFor(
+        pressure: Float,
+        baseWidth: Float,
+        usePressure: Boolean,
+        useEraserScale: Boolean = false
+    ): Float {
+        if (useEraserScale) {
+            // Multiplicador de raio da borracha dinâmica (1.0x .. 2.5x).
+            return (baseWidth * pressure.coerceIn(1f, MAX_ERASER_SCALE))
+                .coerceAtLeast(1f)
+        }
         if (!usePressure) return baseWidth
         val p = pressure.coerceIn(0f, 1f)
         // Curva de resposta não linear: toque leve = traço fino,
@@ -162,4 +188,7 @@ object StrokeOutlineBuilder {
         val factor = 0.28f + 0.72f * sqrt(p)
         return (baseWidth * factor).coerceAtLeast(0.75f)
     }
+
+    /** Limite superior do crescimento da borracha por velocidade. */
+    const val MAX_ERASER_SCALE = 2.5f
 }

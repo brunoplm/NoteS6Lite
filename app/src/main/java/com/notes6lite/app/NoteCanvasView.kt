@@ -5,11 +5,14 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import com.notes6lite.app.domain.model.EraserMode
 import com.notes6lite.app.domain.model.InkPoint
 import com.notes6lite.app.domain.model.PageTemplate
 import com.notes6lite.app.domain.model.SheetStyle
@@ -21,6 +24,7 @@ import com.notes6lite.app.render.StrokeOutline
 import com.notes6lite.app.render.StrokeOutlineBuilder
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
@@ -55,6 +59,17 @@ class NoteCanvasView @JvmOverloads constructor(
     var penStrokeWidth: Float = 6.5f
     var highlighterStrokeWidth: Float = 28f
     var eraserStrokeWidth: Float = 42f
+
+    /**
+     * Como a borracha apaga: objeto (remove o traço inteiro) ou precisa
+     * (PorterDuff.CLEAR na camada de tinta).
+     */
+    var eraserMode: EraserMode = EraserMode.STROKE
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
 
     /**
      * Quando true, a largura do traço da caneta varia ponto a ponto
@@ -115,6 +130,36 @@ class NoteCanvasView @JvmOverloads constructor(
     private var smoothedPressure = 0.5f
     private var lastOutlineBuildTime = 0L
     private var hasEraserStrokes = false
+
+    // ---------------------------------------------------------------------
+    // Borracha: velocidade, hit-test de objeto e undo de exclusões
+    // ---------------------------------------------------------------------
+
+    /** Último ponto em coordenadas de tela, usado no cálculo de velocidade. */
+    private var lastEraserScreenX = 0f
+    private var lastEraserScreenY = 0f
+    private var lastEraserEventTime = 0L
+
+    /** Multiplicador suavizado do raio da borracha (1.0x .. 2.5x). */
+    private var eraserSpeedScale = 1f
+
+    /** Raio efetivo do último toque da borracha (para o preview na tela). */
+    private var eraserPreviewRadius = 0f
+    private var eraserPreviewX = 0f
+    private var eraserPreviewY = 0f
+
+    private val eraserHitPath = Path()
+    private val eraserScratchPath = Path()
+    private val eraserHitBounds = RectF()
+
+    /** Traços removidos pela borracha de objeto, para desfazer em lote. */
+    private val erasedBatches = ArrayDeque<List<PageStroke>>()
+
+    private val eraserPreviewPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        color = Color.parseColor("#94A3B8")
+    }
 
     // ---------------------------------------------------------------------
     // Transformação Pan/Zoom
@@ -277,6 +322,8 @@ class NoteCanvasView @JvmOverloads constructor(
 
         strokes.clear()
         hasEraserStrokes = false
+        erasedBatches.clear()
+        eraserPreviewRadius = 0f
         for (stroke in savedStrokes) {
             if (stroke.mode == ToolMode.ERASER) hasEraserStrokes = true
             strokes.add(
@@ -360,6 +407,15 @@ class NoteCanvasView @JvmOverloads constructor(
         out[0] = screenX
         out[1] = screenY
         inverseMatrix.mapPoints(out)
+    }
+
+    fun getEffectiveInkColor(color: Int): Int {
+        if (isDarkBackground) {
+            if (color == Color.BLACK || color == DEFAULT_INK_COLOR || Color.luminance(color) < 0.25f) {
+                return DEFAULT_DARK_INK_COLOR
+            }
+        }
+        return color
     }
 
     private fun adjustInkColorFor(style: SheetStyle) {
@@ -474,33 +530,57 @@ class NoteCanvasView @JvmOverloads constructor(
 
     private fun startStroke(event: MotionEvent, pointerIndex: Int) {
         val toolType = event.getToolType(pointerIndex)
+        // Atalho físico da S-Pen: com o botão lateral pressionado a ferramenta
+        // ativa é ignorada e o traço inteiro vira borracha. Ao soltar o botão,
+        // a próxima stroke volta automaticamente à ferramenta anterior, porque
+        // currentToolMode nunca é alterado aqui.
+        val stylusButtonDown =
+            (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
         val isStylusEraserButton =
-            toolType == MotionEvent.TOOL_TYPE_ERASER ||
-                (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
+            toolType == MotionEvent.TOOL_TYPE_ERASER || stylusButtonDown
 
         activeMode = if (isStylusEraserButton) ToolMode.ERASER else currentToolMode
-        activeColor = currentColor
+        activeColor = getEffectiveInkColor(currentColor)
         activeBaseWidth = when (activeMode) {
             ToolMode.PEN -> penStrokeWidth
             ToolMode.HIGHLIGHTER -> highlighterStrokeWidth
             ToolMode.ERASER -> eraserStrokeWidth
         }
 
-        activePoints.clear()
         val rawPressure = event.getPressure(pointerIndex).coerceIn(0f, 1f)
         smoothedPressure = if (rawPressure < 0.05f) 0.05f else rawPressure
 
         mapToPage(event.getX(pointerIndex), event.getY(pointerIndex), tempPoint)
         lastPageX = tempPoint[0]
         lastPageY = tempPoint[1]
-        activePoints.add(InkPoint(lastPageX, lastPageY, smoothedPressure))
 
-        activeOutline = StrokeOutlineBuilder.build(
-            points = activePoints,
-            baseWidth = activeBaseWidth,
-            mode = activeMode,
-            pressureEnabled = pressureEnabled
-        )
+        // Reinicia a medição de velocidade da borracha.
+        lastEraserScreenX = event.getX(pointerIndex)
+        lastEraserScreenY = event.getY(pointerIndex)
+        lastEraserEventTime = event.eventTime
+        eraserSpeedScale = 1f
+        eraserPreviewRadius = eraserRadiusFor(1f)
+        eraserPreviewX = lastPageX
+        eraserPreviewY = lastPageY
+
+        activePoints.clear()
+
+        val objectEraser = activeMode == ToolMode.ERASER &&
+            eraserMode == EraserMode.STROKE
+
+        if (objectEraser) {
+            // Borracha de objeto não grava tinta: remove os traços tocados.
+            eraseStrokesAt(lastPageX, lastPageY, eraserPreviewRadius, lastPageX, lastPageY)
+            activeOutline = null
+        } else {
+            activePoints.add(InkPoint(lastPageX, lastPageY, smoothedPressure))
+            activeOutline = StrokeOutlineBuilder.build(
+                points = activePoints,
+                baseWidth = activeBaseWidth,
+                mode = activeMode,
+                pressureEnabled = pressureEnabled
+            )
+        }
         lastOutlineBuildTime = event.eventTime
 
         isStylusDrawing = true
@@ -509,6 +589,22 @@ class NoteCanvasView @JvmOverloads constructor(
     }
 
     private fun appendMove(event: MotionEvent, pointerIndex: Int) {
+        // Monitora o botão lateral da S-Pen durante o movimento (troca imediata para borracha e retorno ao soltar)
+        val stylusButtonDown = (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
+        val isStylusEraser = event.getToolType(pointerIndex) == MotionEvent.TOOL_TYPE_ERASER || stylusButtonDown
+        val intendedMode = if (isStylusEraser) ToolMode.ERASER else currentToolMode
+
+        if (intendedMode != activeMode) {
+            commitStroke()
+            startStroke(event, pointerIndex)
+            return
+        }
+
+        if (activeMode == ToolMode.ERASER && eraserMode == EraserMode.STROKE) {
+            appendObjectErase(event, pointerIndex)
+            return
+        }
+
         // Pontos históricos do digitalizador: base do zero lag da S-Pen.
         val historySize = event.historySize
         for (h in 0 until historySize) {
@@ -527,6 +623,19 @@ class NoteCanvasView @JvmOverloads constructor(
         mapToPage(event.getX(pointerIndex), event.getY(pointerIndex), tempPoint)
         appendPoint(tempPoint[0], tempPoint[1], event.getPressure(pointerIndex))
 
+        if (activeMode == ToolMode.ERASER) {
+            // A borracha precisa usa a velocidade do gesto para engordar.
+            val scale = updateEraserSpeed(
+                event.eventTime,
+                event.getX(pointerIndex),
+                event.getY(pointerIndex)
+            )
+            eraserSpeedScale = scale
+            eraserPreviewRadius = eraserRadiusFor(scale)
+            eraserPreviewX = tempPoint[0]
+            eraserPreviewY = tempPoint[1]
+        }
+
         // Reconstruir o contorno é O(n). Limitar a ~125 Hz mantém o preview
         // fluido sem gastar CPU demais em traços longos.
         if (event.eventTime - lastOutlineBuildTime >= 8L) {
@@ -542,15 +651,171 @@ class NoteCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * Borracha de objeto: apaga tudo o que a ponta (ou o segmento percorrido)
+     * intersectar e remove os traços inteiros da lista de uma só vez.
+     */
+    private fun appendObjectErase(event: MotionEvent, pointerIndex: Int) {
+        val historySize = event.historySize
+        var previousX = lastPageX
+        var previousY = lastPageY
+
+        for (h in 0 until historySize) {
+            mapToPage(
+                event.getHistoricalX(pointerIndex, h),
+                event.getHistoricalY(pointerIndex, h),
+                tempPoint
+            )
+            val scale = updateEraserSpeed(
+                event.eventTime,
+                event.getHistoricalX(pointerIndex, h),
+                event.getHistoricalY(pointerIndex, h)
+            )
+            eraserSpeedScale = scale
+            eraserPreviewRadius = eraserRadiusFor(scale)
+            eraseStrokesAt(
+                tempPoint[0],
+                tempPoint[1],
+                eraserPreviewRadius,
+                previousX,
+                previousY
+            )
+            previousX = tempPoint[0]
+            previousY = tempPoint[1]
+        }
+
+        mapToPage(event.getX(pointerIndex), event.getY(pointerIndex), tempPoint)
+        val scale = updateEraserSpeed(
+            event.eventTime,
+            event.getX(pointerIndex),
+            event.getY(pointerIndex)
+        )
+        eraserSpeedScale = scale
+        eraserPreviewRadius = eraserRadiusFor(scale)
+        eraserPreviewX = tempPoint[0]
+        eraserPreviewY = tempPoint[1]
+        eraseStrokesAt(tempPoint[0], tempPoint[1], eraserPreviewRadius, previousX, previousY)
+
+        lastPageX = tempPoint[0]
+        lastPageY = tempPoint[1]
+        invalidate()
+    }
+
+    /**
+     * Velocidade do gesto em pixels de tela por milissegundo (independe do
+     * zoom). Abaixo de [ERASER_SPEED_SLOW] o raio fica em 1.0x; acima de
+     * [ERASER_SPEED_FAST] chega a 2.5x. A transição é contínua para o traço
+     * não "pular" de tamanho.
+     */
+    private fun updateEraserSpeed(eventTime: Long, screenX: Float, screenY: Float): Float {
+        val dt = (eventTime - lastEraserEventTime).coerceAtLeast(1L)
+        val distance = hypot(screenX - lastEraserScreenX, screenY - lastEraserScreenY)
+        val speed = distance / dt
+
+        lastEraserScreenX = screenX
+        lastEraserScreenY = screenY
+        lastEraserEventTime = eventTime
+
+        val target = when {
+            speed <= ERASER_SPEED_SLOW -> 1f
+            speed <= ERASER_SPEED_FAST -> {
+                val t = (speed - ERASER_SPEED_SLOW) /
+                    (ERASER_SPEED_FAST - ERASER_SPEED_SLOW)
+                1f + t * 0.5f
+            }
+
+            else -> {
+                val t = ((speed - ERASER_SPEED_FAST) / (ERASER_SPEED_FAST * 1.6f))
+                    .coerceIn(0f, 1f)
+                1.5f + t * 1.0f
+            }
+        }
+
+        // Suavização: o raio acompanha a mão, sem tremer a cada evento.
+        eraserSpeedScale = (eraserSpeedScale * 0.55f + target * 0.45f)
+            .coerceIn(1f, StrokeOutlineBuilder.MAX_ERASER_SCALE)
+        return eraserSpeedScale
+    }
+
+    private fun eraserRadiusFor(scale: Float): Float =
+        (eraserStrokeWidth * scale.coerceIn(1f, StrokeOutlineBuilder.MAX_ERASER_SCALE)) / 2f
+
+    /**
+     * Remove da página os traços que colidem com a ponta da borracha.
+     * Primeiro descarta por caixa delimitadora (barato) e só então faz a
+     * interseção exata de Path, que é a parte cara.
+     */
+    private fun eraseStrokesAt(
+        x: Float,
+        y: Float,
+        radius: Float,
+        fromX: Float,
+        fromY: Float
+    ): Boolean {
+        if (strokes.isEmpty()) return false
+
+        eraserHitPath.reset()
+        eraserHitPath.addCircle(x, y, radius, Path.Direction.CW)
+        if (abs(fromX - x) > 0.01f || abs(fromY - y) > 0.01f) {
+            // Segmento percorrido: cápsula aproximada para não deixar buracos
+            // entre dois eventos da S-Pen.
+            eraserHitPath.addRoundRect(
+                min(fromX, x) - radius,
+                min(fromY, y) - radius,
+                max(fromX, x) + radius,
+                max(fromY, y) + radius,
+                radius,
+                radius,
+                Path.Direction.CW
+            )
+        }
+        eraserHitPath.computeBounds(eraserHitBounds, true)
+
+        var removedAny = false
+        val removed = ArrayList<PageStroke>()
+        val iterator = strokes.iterator()
+        while (iterator.hasNext()) {
+            val pageStroke = iterator.next()
+            if (!RectF.intersects(pageStroke.outline.bounds, eraserHitBounds)) continue
+
+            eraserScratchPath.reset()
+            val intersects = eraserScratchPath.op(
+                pageStroke.outline.path,
+                eraserHitPath,
+                Path.Op.INTERSECT
+            )
+            if (intersects && !eraserScratchPath.isEmpty) {
+                removed.add(pageStroke)
+                iterator.remove()
+                removedAny = true
+            }
+        }
+
+        if (removed.isNotEmpty()) {
+            erasedBatches.addLast(removed)
+            if (erasedBatches.size > MAX_ERASED_BATCHES) erasedBatches.removeFirst()
+            hasEraserStrokes = strokes.any { it.data.mode == ToolMode.ERASER }
+        }
+        return removedAny
+    }
+
     private fun appendPoint(x: Float, y: Float, pressure: Float) {
         if (abs(x - lastPageX) < 0.05f && abs(y - lastPageY) < 0.05f) return
 
-        val rawPressure = pressure.coerceIn(0f, 1f)
-        // Suavização exponencial evita serrilhado na largura do traço.
-        smoothedPressure = (smoothedPressure * 0.65f + rawPressure * 0.35f)
-            .coerceIn(0.05f, 1f)
+        if (activeMode == ToolMode.ERASER) {
+            // Em traços de borracha o campo `pressure` carrega o multiplicador
+            // de raio (1.0x .. 2.5x) usado pelo StrokeOutlineBuilder.
+            activePoints.add(
+                InkPoint(x, y, eraserSpeedScale.coerceIn(1f, StrokeOutlineBuilder.MAX_ERASER_SCALE))
+            )
+        } else {
+            val rawPressure = pressure.coerceIn(0f, 1f)
+            // Suavização exponencial evita serrilhado na largura do traço.
+            smoothedPressure = (smoothedPressure * 0.65f + rawPressure * 0.35f)
+                .coerceIn(0.05f, 1f)
+            activePoints.add(InkPoint(x, y, smoothedPressure))
+        }
 
-        activePoints.add(InkPoint(x, y, smoothedPressure))
         lastPageX = x
         lastPageY = y
     }
@@ -560,7 +825,10 @@ class NoteCanvasView @JvmOverloads constructor(
         isStylusDrawing = false
         activeStylusPointerId = MotionEvent.INVALID_POINTER_ID
 
-        if (activePoints.isNotEmpty()) {
+        val objectEraser = activeMode == ToolMode.ERASER &&
+            eraserMode == EraserMode.STROKE
+
+        if (!objectEraser && activePoints.isNotEmpty()) {
             val data = Stroke(
                 points = activePoints.toList(),
                 color = activeColor,
@@ -579,6 +847,7 @@ class NoteCanvasView @JvmOverloads constructor(
 
         activePoints.clear()
         activeOutline = null
+        eraserPreviewRadius = 0f
         onStrokeCommitted?.invoke()
         invalidate()
     }
@@ -671,14 +940,25 @@ class NoteCanvasView @JvmOverloads constructor(
                 inkPainter.draw(
                     canvas,
                     pageStroke.outline,
-                    pageStroke.data.color,
+                    getEffectiveInkColor(pageStroke.data.color),
                     pageStroke.data.mode
                 )
             }
         }
 
         activeOutline?.let { outline ->
-            inkPainter.draw(canvas, outline, activeColor, activeMode)
+            inkPainter.draw(canvas, outline, getEffectiveInkColor(activeColor), activeMode)
+        }
+
+        // Preview do raio da borracha: o CLEAR é invisível, então o círculo
+        // mostra exatamente a área que está sendo apagada.
+        if (isStylusDrawing && activeMode == ToolMode.ERASER && eraserPreviewRadius > 0f) {
+            canvas.drawCircle(
+                eraserPreviewX,
+                eraserPreviewY,
+                eraserPreviewRadius,
+                eraserPreviewPaint
+            )
         }
 
         if (needsInkLayer) {
@@ -692,6 +972,17 @@ class NoteCanvasView @JvmOverloads constructor(
     // ---------------------------------------------------------------------
 
     fun undo() {
+        // A borracha de objeto remove traços inteiros: desfazer devolve o
+        // último lote apagado antes de voltar a remover o último traço.
+        val erasedBatch = erasedBatches.removeLastOrNull()
+        if (erasedBatch != null) {
+            strokes.addAll(erasedBatch)
+            hasEraserStrokes = strokes.any { it.data.mode == ToolMode.ERASER }
+            onStrokeCommitted?.invoke()
+            invalidate()
+            return
+        }
+
         if (strokes.isNotEmpty()) {
             val removed = strokes.removeAt(strokes.lastIndex)
             if (removed.data.mode == ToolMode.ERASER) {
@@ -704,10 +995,12 @@ class NoteCanvasView @JvmOverloads constructor(
 
     fun clearPageStrokes() {
         strokes.clear()
+        erasedBatches.clear()
         hasEraserStrokes = false
         activePoints.clear()
         activeOutline = null
         isStylusDrawing = false
+        eraserPreviewRadius = 0f
         onStrokeCommitted?.invoke()
         invalidate()
     }
@@ -751,7 +1044,12 @@ class NoteCanvasView @JvmOverloads constructor(
                 mode = stroke.mode,
                 pressureEnabled = pressure
             )
-            ink.draw(inkCanvas, outline, stroke.color, stroke.mode)
+            val colorToDraw = if (style.isDark && bgBitmap == null && (stroke.color == Color.BLACK || stroke.color == DEFAULT_INK_COLOR || Color.luminance(stroke.color) < 0.25f)) {
+                DEFAULT_DARK_INK_COLOR
+            } else {
+                stroke.color
+            }
+            ink.draw(inkCanvas, outline, colorToDraw, stroke.mode)
         }
         targetCanvas.drawBitmap(overlay, 0f, 0f, null)
         overlay.recycle()
@@ -786,7 +1084,12 @@ class NoteCanvasView @JvmOverloads constructor(
                 mode = stroke.mode,
                 pressureEnabled = pressure
             )
-            ink.draw(inkCanvas, outline, stroke.color, stroke.mode)
+            val colorToDraw = if (style.isDark && (stroke.color == Color.BLACK || stroke.color == DEFAULT_INK_COLOR || Color.luminance(stroke.color) < 0.25f)) {
+                DEFAULT_DARK_INK_COLOR
+            } else {
+                stroke.color
+            }
+            ink.draw(inkCanvas, outline, colorToDraw, stroke.mode)
         }
         targetCanvas.drawBitmap(overlay, 0f, 0f, null)
         overlay.recycle()
@@ -795,6 +1098,15 @@ class NoteCanvasView @JvmOverloads constructor(
     companion object {
         val DEFAULT_INK_COLOR: Int = Color.parseColor("#111827")
         val DEFAULT_DARK_INK_COLOR: Int = Color.parseColor("#F8FAFC")
+
+        /** Velocidade (px de tela por ms) abaixo da qual a borracha não engorda. */
+        private const val ERASER_SPEED_SLOW = 0.8f
+
+        /** Acima desta velocidade a borracha já está no crescimento máximo. */
+        private const val ERASER_SPEED_FAST = 3.0f
+
+        /** Quantos lotes de traços apagados podem ser desfeitos. */
+        private const val MAX_ERASED_BATCHES = 24
 
         /**
          * Bounding box dos traços para exportação do Canvas Infinito.

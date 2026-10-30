@@ -4,6 +4,7 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
@@ -12,6 +13,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.widget.Button
 import android.widget.EditText
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,11 +23,16 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.notes6lite.app.data.local.NoteDatabase
 import com.notes6lite.app.data.repository.NotebookRepository
+import com.notes6lite.app.domain.model.ColorScheme
+import com.notes6lite.app.domain.model.EraserMode
 import com.notes6lite.app.domain.model.NotePage
 import com.notes6lite.app.domain.model.Notebook
 import com.notes6lite.app.domain.model.PageTemplate
 import com.notes6lite.app.domain.model.SheetStyle
+import com.notes6lite.app.domain.model.Stroke
 import com.notes6lite.app.domain.model.ToolMode
+import com.notes6lite.app.render.InkPainter
+import com.notes6lite.app.render.StrokeOutlineBuilder
 import com.notes6lite.app.ui.NotesViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,7 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.ceil
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -56,12 +63,34 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnToolPen: Button
     private lateinit var btnToolHighlighter: Button
     private lateinit var btnToolEraser: Button
-    private lateinit var btnStrokeThin: Button
-    private lateinit var btnStrokeMedium: Button
-    private lateinit var btnStrokeThick: Button
+    private lateinit var btnEraserMode: Button
+    private lateinit var seekStroke: SeekBar
+    private lateinit var tvStrokeValue: TextView
+    private lateinit var presetButtons: List<Button>
     private lateinit var btnTemplate: Button
     private lateinit var btnStyle: Button
     private lateinit var btnPressure: Button
+    private lateinit var btnPrevPage: Button
+    private lateinit var btnNextPage: Button
+    private lateinit var btnAddPage: Button
+
+    /** Espessura + cor guardadas em cada botão de preset (P1..P3). */
+    private data class InkPreset(val width: Float, val color: Int)
+
+    private val presets = arrayOfNulls<InkPreset>(PRESET_COUNT)
+    private val presetPrefs by lazy {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+    }
+
+    // ---------------------------------------------------------------------
+    // Estado de navegação e PDF multi-páginas
+    // ---------------------------------------------------------------------
+    private var pdfRenderer: PdfRenderer? = null
+    private var pdfDescriptor: ParcelFileDescriptor? = null
+    private var currentPdfPage: PdfRenderer.Page? = null
+    private var currentPdfTempFile: File? = null
+    private val pageStrokesMap = HashMap<Int, List<Stroke>>()
+    private var currentPageBitmap: Bitmap? = null
 
     private var currentNotebook: Notebook? = null
     private var currentPage: NotePage? = null
@@ -78,7 +107,7 @@ class MainActivity : AppCompatActivity() {
     private val savePdfLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf")
     ) { uri: Uri? ->
-        if (uri != null) exportPdf(uri)
+        if (uri != null) exportAnnotatedPdfToUri(uri)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,11 +116,17 @@ class MainActivity : AppCompatActivity() {
 
         bindViews()
         setupToolbarActions()
+        loadPresets()
+        updateStrokeControls()
+        updateEraserModeButton()
 
-        canvasView.onStrokeCommitted = { scheduleAutosave() }
+        canvasView.onStrokeCommitted = {
+            // Mantém os traços em memória no mapa da página atual
+            pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            scheduleAutosave()
+        }
 
         lifecycleScope.launch {
-            // Veio da biblioteca de pastas? Abre exatamente a nota escolhida.
             val requestedId = intent.getLongExtra(EXTRA_NOTEBOOK_ID, -1L)
             val requested = if (requestedId > 0) viewModel.getNotebook(requestedId) else null
             if (requested != null) {
@@ -116,22 +151,30 @@ class MainActivity : AppCompatActivity() {
         btnToolPen = findViewById(R.id.btnToolPen)
         btnToolHighlighter = findViewById(R.id.btnToolHighlighter)
         btnToolEraser = findViewById(R.id.btnToolEraser)
-        btnStrokeThin = findViewById(R.id.btnStrokeThin)
-        btnStrokeMedium = findViewById(R.id.btnStrokeMedium)
-        btnStrokeThick = findViewById(R.id.btnStrokeThick)
+        btnEraserMode = findViewById(R.id.btnEraserMode)
+        seekStroke = findViewById(R.id.seekStroke)
+        tvStrokeValue = findViewById(R.id.tvStrokeValue)
+        presetButtons = listOf(
+            findViewById(R.id.btnPreset1),
+            findViewById(R.id.btnPreset2),
+            findViewById(R.id.btnPreset3)
+        )
         btnTemplate = findViewById(R.id.btnTemplate)
         btnStyle = findViewById(R.id.btnStyle)
         btnPressure = findViewById(R.id.btnPressure)
+        btnPrevPage = findViewById(R.id.btnPrevPage)
+        btnNextPage = findViewById(R.id.btnNextPage)
+        btnAddPage = findViewById(R.id.btnAddPage)
     }
 
     // ---------------------------------------------------------------------
-    // Cadernos e páginas
+    // Cadernos locais
     // ---------------------------------------------------------------------
 
     private suspend fun createDefaultNotebook() {
         val id = viewModel.createNotebook(
             title = "Minha primeira nota",
-            template = PageTemplate.A4,
+            template = PageTemplate.GRID,
             sheetStyle = SheetStyle.GRID
         )
         openNotebook(id)
@@ -141,6 +184,8 @@ class MainActivity : AppCompatActivity() {
         autosaveJob?.cancelAndJoin()
         autosaveJob = null
         saveCurrentPage()
+        closeCurrentPdf()
+        pageStrokesMap.clear()
 
         val notebook = viewModel.getNotebook(id) ?: return
         currentNotebook = notebook
@@ -149,10 +194,10 @@ class MainActivity : AppCompatActivity() {
         totalPages = viewModel.pageCount(id).coerceAtLeast(1)
         tvNotebookTitle.text = notebook.title
 
-        loadPage(0)
+        loadNotebookPage(0)
     }
 
-    private suspend fun loadPage(index: Int) {
+    private suspend fun loadNotebookPage(index: Int) {
         val notebook = currentNotebook ?: return
         val snapshot = viewModel.loadPage(
             notebookId = notebook.id,
@@ -162,7 +207,7 @@ class MainActivity : AppCompatActivity() {
         )
 
         currentPageIndex = index
-        totalPages = max(totalPages, viewModel.pageCount(notebook.id))
+        totalPages = viewModel.pageCount(notebook.id).coerceAtLeast(index + 1)
 
         val background = withContext(Dispatchers.IO) {
             decodeBackground(snapshot.page.backgroundPath)
@@ -177,16 +222,16 @@ class MainActivity : AppCompatActivity() {
             savedStrokes = snapshot.strokes
         )
 
-        // Só aponta para a página nova depois que o canvas já foi trocado,
-        // para que um autosave tardio nunca grave traços antigos nela.
         currentPage = snapshot.page
-
+        pageStrokesMap[index] = canvasView.getStrokesCopy()
         updateToolbarState()
     }
 
     private suspend fun persistCurrentPage() {
         val page = currentPage ?: return
-        viewModel.savePage(page, canvasView.getStrokesCopy())
+        val strokes = canvasView.getStrokesCopy()
+        pageStrokesMap[currentPageIndex] = strokes
+        viewModel.savePage(page, strokes)
     }
 
     private suspend fun saveCurrentPage() {
@@ -206,17 +251,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun updatePageIndicator() {
         tvPageIndicator.text = "Pág ${currentPageIndex + 1}/$totalPages"
+
+        val hasPrevious = currentPageIndex > 0
+        val hasNext = currentPageIndex < totalPages - 1
+        btnPrevPage.isEnabled = hasPrevious
+        btnPrevPage.alpha = if (hasPrevious) 1f else 0.35f
+        btnNextPage.isEnabled = hasNext
+        btnNextPage.alpha = if (hasNext) 1f else 0.35f
     }
 
     private fun updateToolbarState() {
         val notebook = currentNotebook
-        val page = currentPage
-
         tvNotebookTitle.text = notebook?.title ?: "NoteS6Lite"
-        btnTemplate.text = "Template: ${page?.template?.displayName ?: "—"}"
-        btnStyle.text = "Folha: ${page?.sheetStyle?.displayName ?: "—"}"
+        btnTemplate.text = "Template: ${canvasView.pageTemplate.displayName}"
+        btnStyle.text = "Folha: ${canvasView.sheetStyle.displayName}"
         btnPressure.text = if (canvasView.pressureEnabled) "Pressão ON" else "Pressão OFF"
 
+        updateEraserModeButton()
+        updateStrokeControls()
         updatePageIndicator()
     }
 
@@ -241,29 +293,47 @@ class MainActivity : AppCompatActivity() {
             showNotebooksDialog()
         }
 
-        findViewById<Button>(R.id.btnPrevPage).setOnClickListener {
-            if (currentPageIndex <= 0) return@setOnClickListener
-            lifecycleScope.launch {
-                saveCurrentPage()
-                loadPage(currentPageIndex - 1)
+        // Navegação de páginas conforme o item 4 do requisito:
+        btnPrevPage.setOnClickListener {
+            if (currentPageIndex > 0) {
+                // Salve os traços da página atual no mapa em memória
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                // Atualize currentPageIndex garantindo [0, totalPages - 1]
+                currentPageIndex = (currentPageIndex - 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+                renderCurrentPage()
             }
         }
 
-        findViewById<Button>(R.id.btnNextPage).setOnClickListener {
-            lifecycleScope.launch {
-                saveCurrentPage()
-                val notebook = currentNotebook ?: return@launch
-                val nextIndex = currentPageIndex + 1
-                if (nextIndex >= totalPages) {
+        btnNextPage.setOnClickListener {
+            if (currentPageIndex < totalPages - 1) {
+                // Salve os traços da página atual no mapa em memória
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                // Atualize currentPageIndex garantindo [0, totalPages - 1]
+                currentPageIndex = (currentPageIndex + 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+                renderCurrentPage()
+            }
+        }
+
+        btnAddPage.setOnClickListener {
+            pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            if (pdfRenderer == null && currentNotebook != null) {
+                lifecycleScope.launch {
+                    val notebook = currentNotebook ?: return@launch
+                    val nextIndex = totalPages
                     viewModel.ensurePage(
                         notebookId = notebook.id,
                         pageIndex = nextIndex,
-                        template = notebook.template,
-                        sheetStyle = notebook.sheetStyle
+                        template = canvasView.pageTemplate,
+                        sheetStyle = canvasView.sheetStyle
                     )
                     totalPages = nextIndex + 1
+                    currentPageIndex = nextIndex
+                    loadNotebookPage(nextIndex)
                 }
-                loadPage(nextIndex)
+            } else {
+                totalPages++
+                currentPageIndex = totalPages - 1
+                renderCurrentPage()
             }
         }
 
@@ -271,8 +341,14 @@ class MainActivity : AppCompatActivity() {
         btnToolHighlighter.setOnClickListener { selectTool(ToolMode.HIGHLIGHTER) }
         btnToolEraser.setOnClickListener { selectTool(ToolMode.ERASER) }
 
+        btnEraserMode.setOnClickListener {
+            canvasView.eraserMode = canvasView.eraserMode.toggle()
+            updateEraserModeButton()
+        }
+
         findViewById<Button>(R.id.btnUndo).setOnClickListener {
             canvasView.undo()
+            pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
             scheduleAutosave()
         }
 
@@ -282,30 +358,14 @@ class MainActivity : AppCompatActivity() {
                 .setMessage("Apagar todos os traços desta página? O fundo será preservado.")
                 .setPositiveButton("Limpar") { _, _ ->
                     canvasView.clearPageStrokes()
+                    pageStrokesMap[currentPageIndex] = emptyList()
                     scheduleAutosave()
                 }
                 .setNegativeButton("Cancelar", null)
                 .show()
         }
 
-        btnStrokeThin.setOnClickListener {
-            canvasView.penStrokeWidth = 3.5f
-            canvasView.highlighterStrokeWidth = 18f
-            canvasView.eraserStrokeWidth = 24f
-            highlightStrokeButton(btnStrokeThin)
-        }
-        btnStrokeMedium.setOnClickListener {
-            canvasView.penStrokeWidth = 6.5f
-            canvasView.highlighterStrokeWidth = 28f
-            canvasView.eraserStrokeWidth = 42f
-            highlightStrokeButton(btnStrokeMedium)
-        }
-        btnStrokeThick.setOnClickListener {
-            canvasView.penStrokeWidth = 12f
-            canvasView.highlighterStrokeWidth = 42f
-            canvasView.eraserStrokeWidth = 70f
-            highlightStrokeButton(btnStrokeThick)
-        }
+        setupStrokeControls()
 
         findViewById<Button>(R.id.btnColorBlack).setOnClickListener {
             setInkColor(Color.parseColor("#111827"))
@@ -339,8 +399,8 @@ class MainActivity : AppCompatActivity() {
     private fun selectTool(mode: ToolMode) {
         canvasView.currentToolMode = mode
 
-        val activeTint = ColorStateList.valueOf(Color.parseColor("#2563EB"))
-        val inactiveTint = ColorStateList.valueOf(Color.parseColor("#334155"))
+        val activeTint = ColorStateList.valueOf(COLOR_ACCENT)
+        val inactiveTint = ColorStateList.valueOf(COLOR_TOOL_IDLE)
 
         btnToolPen.backgroundTintList =
             if (mode == ToolMode.PEN) activeTint else inactiveTint
@@ -348,6 +408,8 @@ class MainActivity : AppCompatActivity() {
             if (mode == ToolMode.HIGHLIGHTER) activeTint else inactiveTint
         btnToolEraser.backgroundTintList =
             if (mode == ToolMode.ERASER) activeTint else inactiveTint
+
+        updateStrokeControls()
     }
 
     private fun setInkColor(color: Int) {
@@ -363,31 +425,110 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun highlightStrokeButton(selected: Button) {
-        val activeTint = ColorStateList.valueOf(Color.parseColor("#2563EB"))
-        val inactiveTint = ColorStateList.valueOf(Color.parseColor("#334155"))
-        btnStrokeThin.backgroundTintList = if (selected == btnStrokeThin) activeTint else inactiveTint
-        btnStrokeMedium.backgroundTintList = if (selected == btnStrokeMedium) activeTint else inactiveTint
-        btnStrokeThick.backgroundTintList = if (selected == btnStrokeThick) activeTint else inactiveTint
+    // ---------------------------------------------------------------------
+    // Espessura: slider contínuo + presets favoritos (P1..P3)
+    // ---------------------------------------------------------------------
+
+    private fun setupStrokeControls() {
+        seekStroke.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                applyStrokeWidth(progress.toFloat())
+            }
+
+            override fun onStartTrackingTouch(bar: SeekBar) = Unit
+            override fun onStopTrackingTouch(bar: SeekBar) = Unit
+        })
+
+        presetButtons.forEachIndexed { index, button ->
+            button.setOnClickListener { applyPreset(index) }
+            button.setOnLongClickListener {
+                savePreset(index)
+                true
+            }
+        }
     }
 
+    private fun updateStrokeControls() {
+        val eraser = canvasView.currentToolMode == ToolMode.ERASER
+        val minValue = if (eraser) ERASER_WIDTH_MIN else PEN_WIDTH_MIN
+        val maxValue = if (eraser) ERASER_WIDTH_MAX else PEN_WIDTH_MAX
+        val width = currentToolWidth()
+
+        if (seekStroke.min != minValue) seekStroke.min = minValue
+        if (seekStroke.max != maxValue) seekStroke.max = maxValue
+        seekStroke.progress = width.roundToInt().coerceIn(minValue, maxValue)
+        tvStrokeValue.text = String.format(Locale.US, "%.1f", width)
+    }
+
+    private fun currentToolWidth(): Float = when (canvasView.currentToolMode) {
+        ToolMode.PEN -> canvasView.penStrokeWidth
+        ToolMode.HIGHLIGHTER -> canvasView.highlighterStrokeWidth
+        ToolMode.ERASER -> canvasView.eraserStrokeWidth
+    }
+
+    private fun applyStrokeWidth(width: Float) {
+        when (canvasView.currentToolMode) {
+            ToolMode.PEN -> canvasView.penStrokeWidth = width
+            ToolMode.HIGHLIGHTER -> canvasView.highlighterStrokeWidth = width
+            ToolMode.ERASER -> canvasView.eraserStrokeWidth = width
+        }
+        tvStrokeValue.text = String.format(Locale.US, "%.1f", width)
+    }
+
+    private fun updateEraserModeButton() {
+        val mode = canvasView.eraserMode
+        btnEraserMode.text = "Borracha: ${mode.displayName}"
+        btnEraserMode.backgroundTintList = ColorStateList.valueOf(
+            if (mode == EraserMode.STROKE) COLOR_ACCENT else COLOR_TOOL_IDLE
+        )
+    }
+
+    private fun loadPresets() {
+        val defaults = arrayOf(
+            InkPreset(3.5f, Color.parseColor("#111827")),
+            InkPreset(6.5f, Color.parseColor("#1D4ED8")),
+            InkPreset(12.0f, Color.parseColor("#DC2626"))
+        )
+        for (index in 0 until PRESET_COUNT) {
+            val width = presetPrefs.getFloat(keyWidth(index), defaults[index].width)
+            val color = presetPrefs.getInt(keyColor(index), defaults[index].color)
+            presets[index] = InkPreset(width, color)
+        }
+    }
+
+    private fun applyPreset(index: Int) {
+        val preset = presets.getOrNull(index) ?: return
+        applyStrokeWidth(preset.width)
+        setInkColor(preset.color)
+        seekStroke.progress = preset.width.roundToInt()
+            .coerceIn(seekStroke.min, seekStroke.max)
+        Toast.makeText(this, "Preset P${index + 1} aplicado", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun savePreset(index: Int) {
+        val width = currentToolWidth()
+        val color = canvasView.currentColor
+        presets[index] = InkPreset(width, color)
+        presetPrefs.edit()
+            .putFloat(keyWidth(index), width)
+            .putInt(keyColor(index), color)
+            .apply()
+        Toast.makeText(
+            this,
+            "Preset P${index + 1} salvo (${String.format(Locale.US, "%.1f", width)})",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun keyWidth(index: Int) = "preset_${index}_width"
+    private fun keyColor(index: Int) = "preset_${index}_color"
+
     // ---------------------------------------------------------------------
-    // Diálogos: template, estilo e cadernos
+    // Diálogos: Template, Estilo (Dark Mode) e Cadernos
     // ---------------------------------------------------------------------
 
     private fun showTemplateDialog() {
-        val notebook = currentNotebook ?: return
-        val page = currentPage ?: return
-
-        if (page.backgroundPath != null) {
-            Toast.makeText(
-                this,
-                "Esta página veio de um PDF e mantém o tamanho original.",
-                Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-
         val templates = PageTemplate.values()
         val labels = templates.map { it.displayName }.toTypedArray()
 
@@ -395,49 +536,23 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Template da página")
             .setItems(labels) { _, which ->
                 val template = templates[which]
-                lifecycleScope.launch {
-                    val updatedPage = page.copy(
-                        template = template,
-                        pageWidth = if (template.isInfinite) 0 else template.pageWidth,
-                        pageHeight = if (template.isInfinite) 0 else template.pageHeight
-                    )
-                    currentPage = updatedPage
-                    canvasView.setPageTemplate(template)
-                    viewModel.savePage(updatedPage, canvasView.getStrokesCopy())
-                    viewModel.updateNotebookDefaults(notebook.id, template, page.sheetStyle)
-                    currentNotebook = notebook.copy(
-                        template = template,
-                        sheetStyle = page.sheetStyle
-                    )
-                    updateToolbarState()
-                }
+                canvasView.setPageTemplate(template)
+                updateToolbarState()
             }
             .show()
     }
 
     private fun showStyleDialog() {
-        val notebook = currentNotebook ?: return
-        val page = currentPage ?: return
-
-        val styles = SheetStyle.values()
-        val labels = styles.map { it.displayName }.toTypedArray()
+        val schemes = ColorScheme.values()
+        val labels = schemes.map { "Esquema: ${it.displayName}" }.toTypedArray()
 
         AlertDialog.Builder(this)
-            .setTitle("Estilo da folha")
+            .setTitle("Esquema de Cores da Folha")
             .setItems(labels) { _, which ->
-                val style = styles[which]
-                lifecycleScope.launch {
-                    val updatedPage = page.copy(sheetStyle = style)
-                    currentPage = updatedPage
-                    canvasView.setSheetStyle(style)
-                    viewModel.savePage(updatedPage, canvasView.getStrokesCopy())
-                    viewModel.updateNotebookDefaults(notebook.id, page.template, style)
-                    currentNotebook = notebook.copy(
-                        template = page.template,
-                        sheetStyle = style
-                    )
-                    updateToolbarState()
-                }
+                val scheme = schemes[which]
+                val newStyle = SheetStyle.of(canvasView.pageTemplate, scheme)
+                canvasView.setSheetStyle(newStyle)
+                updateToolbarState()
             }
             .show()
     }
@@ -451,7 +566,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val labels = notebooks.map {
-                "${it.title}   (${it.template.displayName} • ${it.sheetStyle.displayName})"
+                "${it.title}   (${it.template.displayName})"
             }.toTypedArray()
 
             AlertDialog.Builder(this@MainActivity)
@@ -480,7 +595,7 @@ class MainActivity : AppCompatActivity() {
                 lifecycleScope.launch {
                     val id = viewModel.createNotebook(
                         title = title,
-                        template = PageTemplate.A4,
+                        template = PageTemplate.GRID,
                         sheetStyle = SheetStyle.GRID,
                         folderId = currentNotebook?.folderId
                     )
@@ -566,120 +681,205 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------------------
-    // Importação de PDF -> caderno com páginas em bitmap
+    // Correção Crítica do PDF Multi-Páginas (PdfRenderer + renderCurrentPage)
     // ---------------------------------------------------------------------
 
     private fun importPdf(uri: Uri) {
-        Toast.makeText(this, "Importando PDF…", Toast.LENGTH_SHORT).show()
-        val targetFolderId = currentNotebook?.folderId
         lifecycleScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) {
-                    importPdfToNotebook(uri, targetFolderId)
+                saveCurrentPage()
+                closeCurrentPdf()
+                pageStrokesMap.clear()
+
+                val displayName = queryDisplayName(uri) ?: "PDF Importado"
+                tvNotebookTitle.text = displayName.removeSuffix(".pdf")
+
+                val tempFile = File(cacheDir, "doc_${System.currentTimeMillis()}.pdf")
+                withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                    } ?: throw IllegalStateException("Não foi possível ler o arquivo PDF.")
                 }
-                openNotebook(result.first)
-                Toast.makeText(
-                    this@MainActivity,
-                    "PDF importado (${result.second} páginas)",
-                    Toast.LENGTH_SHORT
-                ).show()
+                currentPdfTempFile = tempFile
+
+                val pfd = ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY)
+                pdfDescriptor = pfd
+                val renderer = PdfRenderer(pfd)
+                pdfRenderer = renderer
+
+                // Ao carregar um PDF com PdfRenderer, leia pdfRenderer.pageCount
+                // e atualize a variável totalPages com a quantidade exata de páginas do documento
+                totalPages = renderer.pageCount
+                currentPageIndex = 0
+
+                renderCurrentPage()
+                Toast.makeText(this@MainActivity, "PDF aberto ($totalPages páginas)", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Erro ao abrir PDF: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
+                Toast.makeText(this@MainActivity, "Erro ao carregar PDF: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
 
     /**
-     * Executa toda a parte pesada (PdfRenderer + bitmaps + arquivos) fora da
-     * main thread. Retorna (notebookId, pageCount).
+     * Renderiza a página correspondente do PDF com PdfRenderer.
+     * 1. Fecha a página anterior do PdfRenderer e abre pdfRenderer.openPage(currentPageIndex).
+     * 2. Renderiza o Bitmap da página correspondente.
+     * 3. Passa para canvasView.setPageContent(bitmap, pageStrokesMap[currentPageIndex]).
+     * 4. Atualiza o indicador de texto: tvPageIndicator.text = "Pág ${currentPageIndex + 1}/$totalPages".
+     * 5. Desabilita visualmente o botão anterior na página 1 e o próximo na última página.
      */
-    private suspend fun importPdfToNotebook(
-        uri: Uri,
-        folderId: Long?
-    ): Pair<Long, Int> {
-        val displayName = queryDisplayName(uri) ?: "PDF importado"
-        val tempFile = File(cacheDir, "import_${System.currentTimeMillis()}.pdf")
-        val directory = File(filesDir, "pdf_pages").apply { mkdirs() }
-        var descriptor: ParcelFileDescriptor? = null
-        var renderer: PdfRenderer? = null
-        var createdNotebookId: Long? = null
+    private fun renderCurrentPage() {
+        val renderer = pdfRenderer
+        if (renderer != null && currentPageIndex < renderer.pageCount) {
+            // 1. Fecha a página anterior do PdfRenderer e abre a página atual
+            currentPdfPage?.close()
+            currentPdfPage = null
 
-        try {
-            val input = contentResolver.openInputStream(uri)
-                ?: throw IllegalStateException("Não foi possível ler o arquivo PDF")
-            input.use { stream ->
-                FileOutputStream(tempFile).use { output -> stream.copyTo(output) }
-            }
+            val page = renderer.openPage(currentPageIndex)
+            currentPdfPage = page
 
-            // Locais não-nulos evitam depender de smart cast em variáveis
-            // capturadas pelos blocos de limpeza do finally.
-            val pfd = ParcelFileDescriptor.open(
-                tempFile,
-                ParcelFileDescriptor.MODE_READ_ONLY
-            )
-            descriptor = pfd
-            val pdfRenderer = PdfRenderer(pfd)
-            renderer = pdfRenderer
-            val pageCount = pdfRenderer.pageCount
-            if (pageCount <= 0) throw IllegalStateException("PDF sem páginas")
+            // 2. Renderiza o Bitmap da página correspondente
+            val size = pdfPageTargetSize(page.width, page.height)
+            val bitmap = Bitmap.createBitmap(size.first, size.second, Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(Color.WHITE)
+            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
-            val notebookId = viewModel.createNotebook(
-                title = displayName.removeSuffix(".pdf"),
-                template = PageTemplate.A4,
-                sheetStyle = SheetStyle.BLANK,
-                createFirstPage = false,
-                folderId = folderId
-            )
-            createdNotebookId = notebookId
+            currentPageBitmap?.recycle()
+            currentPageBitmap = bitmap
 
-            for (index in 0 until pageCount) {
-                val pdfPage = pdfRenderer.openPage(index)
-                val size = pdfPageTargetSize(pdfPage.width, pdfPage.height)
-                val bitmap = Bitmap.createBitmap(size.first, size.second, Bitmap.Config.ARGB_8888)
-                try {
-                    bitmap.eraseColor(Color.WHITE)
-                    pdfPage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                } finally {
-                    pdfPage.close()
-                }
+            // 3. Passa para canvasView.setPageContent(bitmap, pageStrokesMap[currentPageIndex])
+            val strokes = pageStrokesMap[currentPageIndex] ?: emptyList()
+            canvasView.setPageContent(bitmap, strokes)
+        } else {
+            val strokes = pageStrokesMap[currentPageIndex] ?: emptyList()
+            canvasView.setPageContent(null, strokes)
+        }
 
-                val file = File(directory, "nb_${notebookId}_p${index}.png")
-                try {
-                    FileOutputStream(file).use { output ->
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        // 4. Atualiza o indicador de texto: tvPageIndicator.text = "Pág ${currentPageIndex + 1}/$totalPages"
+        tvPageIndicator.text = "Pág ${currentPageIndex + 1}/$totalPages"
+
+        // 5. Desabilita visualmente o botão anterior na página 1 e o próximo na última página
+        val hasPrevious = currentPageIndex > 0
+        val hasNext = currentPageIndex < totalPages - 1
+        btnPrevPage.isEnabled = hasPrevious
+        btnPrevPage.alpha = if (hasPrevious) 1f else 0.35f
+        btnNextPage.isEnabled = hasNext
+        btnNextPage.alpha = if (hasNext) 1f else 0.35f
+    }
+
+    /**
+     * Exportação de Todas as Páginas combinando o fundo do PDF com os traços
+     * anotados no mapa em memória (pageStrokesMap[i]).
+     */
+    private fun exportAnnotatedPdfToUri(uri: Uri) {
+        lifecycleScope.launch {
+            try {
+                // Antes de exportar, salva os traços da página atual no mapa
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+
+                val renderer = pdfRenderer
+                val pressure = canvasView.pressureEnabled
+
+                Toast.makeText(this@MainActivity, "Exportando PDF ($totalPages páginas)...", Toast.LENGTH_SHORT).show()
+
+                withContext(Dispatchers.IO) {
+                    val document = PdfDocument()
+                    try {
+                        // Fecha página aberta do PdfRenderer antes de abrir páginas sequenciais na exportação
+                        currentPdfPage?.close()
+                        currentPdfPage = null
+
+                        for (i in 0 until totalPages) {
+                            val strokes = pageStrokesMap[i] ?: emptyList()
+
+                            if (renderer != null && i < renderer.pageCount) {
+                                val pdfPage = renderer.openPage(i)
+                                try {
+                                    val widthPt = pdfPage.width
+                                    val heightPt = pdfPage.height
+                                    val pageInfo = PdfDocument.PageInfo.Builder(widthPt, heightPt, i + 1).create()
+                                    val docPage = document.startPage(pageInfo)
+
+                                    val targetSize = pdfPageTargetSize(pdfPage.width, pdfPage.height)
+                                    val pageBitmap = Bitmap.createBitmap(
+                                        targetSize.first,
+                                        targetSize.second,
+                                        Bitmap.Config.ARGB_8888
+                                    )
+                                    pageBitmap.eraseColor(Color.WHITE)
+                                    pdfPage.render(pageBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+
+                                    val destRect = RectF(0f, 0f, widthPt.toFloat(), heightPt.toFloat())
+                                    docPage.canvas.drawBitmap(pageBitmap, null, destRect, null)
+                                    pageBitmap.recycle()
+
+                                    if (strokes.isNotEmpty()) {
+                                        docPage.canvas.save()
+                                        val scaleX = widthPt.toFloat() / targetSize.first.toFloat()
+                                        val scaleY = heightPt.toFloat() / targetSize.second.toFloat()
+                                        docPage.canvas.scale(scaleX, scaleY)
+
+                                        val ink = InkPainter()
+                                        for (stroke in strokes) {
+                                            val outline = StrokeOutlineBuilder.build(
+                                                points = stroke.points,
+                                                baseWidth = stroke.baseWidth,
+                                                mode = stroke.mode,
+                                                pressureEnabled = pressure
+                                            )
+                                            val colorToDraw = if (canvasView.sheetStyle.isDark && (stroke.color == Color.BLACK || Color.luminance(stroke.color) < 0.25f)) {
+                                                NoteCanvasView.DEFAULT_DARK_INK_COLOR
+                                            } else {
+                                                stroke.color
+                                            }
+                                            ink.draw(docPage.canvas, outline, colorToDraw, stroke.mode)
+                                        }
+                                        docPage.canvas.restore()
+                                    }
+
+                                    document.finishPage(docPage)
+                                } finally {
+                                    pdfPage.close()
+                                }
+                            } else {
+                                // Modo folha de caderno padrão
+                                val width = PageTemplate.DEFAULT_WIDTH
+                                val height = PageTemplate.DEFAULT_HEIGHT
+                                val pdfSize = pdfPageSize(width, height)
+                                val pageInfo = PdfDocument.PageInfo.Builder(pdfSize.first, pdfSize.second, i + 1).create()
+                                val docPage = document.startPage(pageInfo)
+
+                                docPage.canvas.scale(
+                                    pdfSize.first / width.toFloat(),
+                                    pdfSize.second / height.toFloat()
+                                )
+                                canvasView.renderPageForExport(
+                                    targetCanvas = docPage.canvas,
+                                    bgBitmap = null,
+                                    pageStrokes = strokes,
+                                    targetWidth = width,
+                                    targetHeight = height,
+                                    style = canvasView.sheetStyle,
+                                    pressure = pressure
+                                )
+                                document.finishPage(docPage)
+                            }
+                        }
+
+                        contentResolver.openOutputStream(uri)?.use { output ->
+                            document.writeTo(output)
+                        } ?: throw IllegalStateException("Não foi possível salvar o arquivo de saída.")
+                    } finally {
+                        document.close()
                     }
-                } finally {
-                    bitmap.recycle()
                 }
 
-                viewModel.createPage(
-                    notebookId = notebookId,
-                    pageIndex = index,
-                    template = PageTemplate.A4,
-                    sheetStyle = SheetStyle.BLANK,
-                    pageWidth = size.first,
-                    pageHeight = size.second,
-                    backgroundPath = file.absolutePath
-                )
+                // Reabre a visualização da página corrente após a exportação
+                renderCurrentPage()
+                Toast.makeText(this@MainActivity, "PDF exportado com sucesso ($totalPages páginas)!", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "Erro ao exportar PDF: ${e.message}", Toast.LENGTH_LONG).show()
             }
-
-            return notebookId to pageCount
-        } catch (e: Exception) {
-            createdNotebookId?.let { id ->
-                runCatching { viewModel.deleteNotebook(id) }
-                directory.listFiles()
-                    ?.filter { it.name.startsWith("nb_${id}_p") }
-                    ?.forEach { it.delete() }
-            }
-            throw e
-        } finally {
-            runCatching { renderer?.close() }
-            runCatching { descriptor?.close() }
-            tempFile.delete()
         }
     }
 
@@ -689,6 +889,16 @@ class MainActivity : AppCompatActivity() {
         val targetWidth = (width * scale).roundToInt().coerceAtLeast(1)
         val targetHeight = (height * scale).roundToInt().coerceAtLeast(1)
         return targetWidth to targetHeight
+    }
+
+    private fun pdfPageSize(widthPx: Int, heightPx: Int): Pair<Int, Int> {
+        val safeWidth = widthPx.coerceAtLeast(1)
+        val safeHeight = heightPx.coerceAtLeast(1)
+        val pdfWidth = PDF_PAGE_WIDTH_PT
+        val pdfHeight = (pdfWidth.toFloat() * safeHeight / safeWidth)
+            .roundToInt()
+            .coerceAtLeast(1)
+        return pdfWidth to pdfHeight
     }
 
     private fun queryDisplayName(uri: Uri): String? {
@@ -706,117 +916,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return name
-    }
-
-    // ---------------------------------------------------------------------
-    // Exportação para PDF
-    // ---------------------------------------------------------------------
-
-    private fun exportPdf(uri: Uri) {
-        lifecycleScope.launch {
-            try {
-                saveCurrentPage()
-                val notebook = currentNotebook ?: return@launch
-                val pages = viewModel.getPages(notebook.id)
-
-                if (pages.isEmpty()) {
-                    Toast.makeText(this@MainActivity, "Nenhuma página para exportar.", Toast.LENGTH_SHORT).show()
-                    return@launch
-                }
-
-                // Lido na main thread antes de ir para IO.
-                val pressure = canvasView.pressureEnabled
-
-                withContext(Dispatchers.IO) {
-                    val document = PdfDocument()
-                    try {
-                        for (page in pages) {
-                            val strokes = viewModel.getStrokes(page.id)
-
-                            if (page.template.isInfinite) {
-                                val bounds = NoteCanvasView.computeContentBounds(strokes)
-                                val width = ceil(bounds.width()).toInt().coerceAtLeast(1)
-                                val height = ceil(bounds.height()).toInt().coerceAtLeast(1)
-                                val pdfSize = pdfPageSize(width, height)
-                                val pdfPage = document.startPage(
-                                    PdfDocument.PageInfo
-                                        .Builder(pdfSize.first, pdfSize.second, page.pageIndex + 1)
-                                        .create()
-                                )
-                                // O canvas do PdfDocument usa pontos (1/72"):
-                                // desenhamos em pixels de página e escalamos.
-                                pdfPage.canvas.scale(
-                                    pdfSize.first / width.toFloat(),
-                                    pdfSize.second / height.toFloat()
-                                )
-                                canvasView.renderInfinitePageForExport(
-                                    targetCanvas = pdfPage.canvas,
-                                    pageStrokes = strokes,
-                                    contentBounds = bounds,
-                                    style = page.sheetStyle,
-                                    pressure = pressure
-                                )
-                                document.finishPage(pdfPage)
-                            } else {
-                                val background = decodeBackground(page.backgroundPath)
-                                val width = page.pageWidth.coerceAtLeast(1)
-                                val height = page.pageHeight.coerceAtLeast(1)
-                                val pdfSize = pdfPageSize(width, height)
-                                val pdfPage = document.startPage(
-                                    PdfDocument.PageInfo
-                                        .Builder(pdfSize.first, pdfSize.second, page.pageIndex + 1)
-                                        .create()
-                                )
-                                pdfPage.canvas.scale(
-                                    pdfSize.first / width.toFloat(),
-                                    pdfSize.second / height.toFloat()
-                                )
-                                canvasView.renderPageForExport(
-                                    targetCanvas = pdfPage.canvas,
-                                    bgBitmap = background,
-                                    pageStrokes = strokes,
-                                    targetWidth = width,
-                                    targetHeight = height,
-                                    style = page.sheetStyle,
-                                    pressure = pressure
-                                )
-                                document.finishPage(pdfPage)
-                                background?.recycle()
-                            }
-                        }
-
-                        val output = contentResolver.openOutputStream(uri)
-                            ?: throw IllegalStateException("Destino do PDF indisponível")
-                        output.use { document.writeTo(it) }
-                    } finally {
-                        document.close()
-                    }
-                }
-
-                Toast.makeText(this@MainActivity, "PDF salvo com sucesso!", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Erro ao salvar PDF: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-    }
-
-    /**
-     * O PdfDocument mede páginas em pontos (1/72"). Convertemos o espaço de
-     * pixels da página para uma largura A4 (595 pt) mantendo a proporção,
-     * para que o PDF exportado tenha tamanho imprimível.
-     */
-    private fun pdfPageSize(widthPx: Int, heightPx: Int): Pair<Int, Int> {
-        val safeWidth = widthPx.coerceAtLeast(1)
-        val safeHeight = heightPx.coerceAtLeast(1)
-        val pdfWidth = PDF_PAGE_WIDTH_PT
-        val pdfHeight = (pdfWidth.toFloat() * safeHeight / safeWidth)
-            .roundToInt()
-            .coerceAtLeast(1)
-        return pdfWidth to pdfHeight
     }
 
     private fun decodeBackground(path: String?): Bitmap? {
@@ -842,9 +941,18 @@ class MainActivity : AppCompatActivity() {
         return BitmapFactory.decodeFile(path, options)
     }
 
-    // ---------------------------------------------------------------------
-    // Ciclo de vida
-    // ---------------------------------------------------------------------
+    private fun closeCurrentPdf() {
+        runCatching { currentPdfPage?.close() }
+        currentPdfPage = null
+        runCatching { pdfRenderer?.close() }
+        pdfRenderer = null
+        runCatching { pdfDescriptor?.close() }
+        pdfDescriptor = null
+        currentPageBitmap?.recycle()
+        currentPageBitmap = null
+        currentPdfTempFile?.delete()
+        currentPdfTempFile = null
+    }
 
     override fun onPause() {
         super.onPause()
@@ -853,11 +961,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    companion object {
-        /** Chave do Intent para abrir direto uma nota vinda da biblioteca. */
-        const val EXTRA_NOTEBOOK_ID = "com.notes6lite.app.extra.NOTEBOOK_ID"
+    override fun onDestroy() {
+        super.onDestroy()
+        closeCurrentPdf()
+    }
 
-        /** Largura de uma folha A4 em pontos (1/72"), usada na exportação. */
+    companion object {
+        const val EXTRA_NOTEBOOK_ID = "com.notes6lite.app.extra.NOTEBOOK_ID"
         private const val PDF_PAGE_WIDTH_PT = 595
+
+        private const val PEN_WIDTH_MIN = 1
+        private const val PEN_WIDTH_MAX = 35
+        private const val ERASER_WIDTH_MIN = 10
+        private const val ERASER_WIDTH_MAX = 70
+
+        private const val PRESET_COUNT = 3
+        private const val PREFS_NAME = "note_toolbar"
+
+        private val COLOR_ACCENT = Color.parseColor("#2563EB")
+        private val COLOR_TOOL_IDLE = Color.parseColor("#334155")
     }
 }

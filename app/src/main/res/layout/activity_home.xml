@@ -2,7 +2,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#F1F5F9"
+    android:background="#0F172A"
     android:orientation="vertical">
 
     <!-- Barra superior: título, migalhas de pão e ações -->
