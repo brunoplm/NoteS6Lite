@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#F8FAFC">
+
+    <!-- Barra de Ferramentas Superior (Inspirada no Notewise) -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:background="#1E293B"
+        android:scrollbars="none"
+        android:elevation="6dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="12dp">
+
+            <!-- Importar e Salvar PDF -->
+            <Button
+                android:id="@+id/btnOpenPdf"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="Abrir PDF"
+                android:textSize="12sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#334155" />
+
+            <Button
+                android:id="@+id/btnSavePdf"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginStart="6dp"
+                android:text="Salvar PDF"
+                android:textSize="12sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#0284C7" />
+
+            <!-- Navegação de Páginas -->
+            <Button
+                android:id="@+id/btnPrevPage"
+                android:layout_width="42dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="10dp"
+                android:text="◀"
+                android:textSize="13sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#475569" />
+
+            <TextView
+                android:id="@+id/tvPageIndicator"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="8dp"
+                android:text="Pág 1/1"
+                android:textColor="#F8FAFC"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnNextPage"
+                android:layout_width="42dp"
+                android:layout_height="40dp"
+                android:text="▶"
+                android:textSize="13sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#475569" />
+
+            <!-- Divisor -->
+            <View
+                android:layout_width="1dp"
+                android:layout_height="32dp"
+                android:layout_marginHorizontal="10dp"
+                android:background="#475569" />
+
+            <!-- Ferramentas de Escrita -->
+            <Button
+                android:id="@+id/btnToolPen"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="Caneta"
+                android:textSize="12sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#2563EB" />
+
+            <Button
+                android:id="@+id/btnToolHighlighter"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginStart="6dp"
+                android:text="Marca-Texto"
+                android:textSize="12sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#334155" />
+
+            <Button
+                android:id="@+id/btnToolEraser"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginStart="6dp"
+                android:text="Borracha"
+                android:textSize="12sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#334155" />
+
+            <Button
+                android:id="@+id/btnUndo"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginStart="6dp"
+                android:text="Desfazer ↶"
+                android:textSize="12sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#475569" />
+
+            <!-- Divisor -->
+            <View
+                android:layout_width="1dp"
+                android:layout_height="32dp"
+                android:layout_marginHorizontal="10dp"
+                android:background="#475569" />
+
+            <!-- Espessura do Traço -->
+            <Button
+                android:id="@+id/btnStrokeThin"
+                android:layout_width="56dp"
+                android:layout_height="40dp"
+                android:text="Fina"
+                android:textSize="11sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#334155" />
+
+            <Button
+                android:id="@+id/btnStrokeMedium"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="4dp"
+                android:text="Média"
+                android:textSize="11sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#2563EB" />
+
+            <Button
+                android:id="@+id/btnStrokeThick"
+                android:layout_width="68dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="4dp"
+                android:text="Grossa"
+                android:textSize="11sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#334155" />
+
+            <!-- Divisor -->
+            <View
+                android:layout_width="1dp"
+                android:layout_height="32dp"
+                android:layout_marginHorizontal="10dp"
+                android:background="#475569" />
+
+            <!-- Paleta de Cores de Estudo -->
+            <Button
+                android:id="@+id/btnColorBlack"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:text=""
+                android:backgroundTint="#111827" />
+
+            <Button
+                android:id="@+id/btnColorBlue"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:text=""
+                android:backgroundTint="#1D4ED8" />
+
+            <Button
+                android:id="@+id/btnColorRed"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:text=""
+                android:backgroundTint="#DC2626" />
+
+            <Button
+                android:id="@+id/btnColorGreen"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:text=""
+                android:backgroundTint="#059669" />
+
+            <Button
+                android:id="@+id/btnColorYellow"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="6dp"
+                android:text=""
+                android:backgroundTint="#FACC15" />
+
+            <!-- Centralizar Zoom -->
+            <Button
+                android:id="@+id/btnResetZoom"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginStart="12dp"
+                android:text="Ajustar Tela"
+                android:textSize="11sp"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#475569" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- Área de Desenho Nativa com S-Pen -->
+    <com.notes6lite.app.NoteCanvasView
+        android:id="@+id/noteCanvasView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+</LinearLayout>
