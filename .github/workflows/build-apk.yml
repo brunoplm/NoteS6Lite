@@ -31,8 +31,8 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: 4. Compilar o Aplicativo (.APK)
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: 4. Compilar o Aplicativo Oficial Otimizado (.APK)
+        run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: 5. Renomear APK com Versao
         id: prep
@@ -40,7 +40,7 @@ jobs:
           VERSION=$(grep "versionName" app/build.gradle.kts | head -n 1 | awk -F'"' '{print $2}')
           if [ -z "$VERSION" ]; then VERSION="1.0"; fi
           APK_NAME="NoteS6Lite-v${VERSION}.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "${APK_NAME}"
+          cp app/build/outputs/apk/release/app-release.apk "${APK_NAME}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "apk_name=${APK_NAME}" >> $GITHUB_OUTPUT
 
@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: NoteS6Lite-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
       - name: 7. Publicar Release Oficial no GitHub
