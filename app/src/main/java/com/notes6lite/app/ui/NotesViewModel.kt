@@ -45,6 +45,17 @@ class NotesViewModel(private val repository: NotebookRepository) : ViewModel() {
         repository.getNotebook(id)
     }
 
+    suspend fun getSummaryNote(parentNoteId: Long): Notebook? = withContext(Dispatchers.IO) {
+        repository.getSummaryNoteForParent(parentNoteId)
+    }
+
+    suspend fun saveSummary(parentNoteId: Long, parentTitle: String, text: String, folderId: Long?): Long =
+        writeMutex.withLock {
+            withContext(Dispatchers.IO) {
+                repository.saveSummaryText(parentNoteId, parentTitle, text, folderId)
+            }
+        }
+
     suspend fun createNotebook(
         title: String,
         template: PageTemplate,

@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -16,8 +17,10 @@ import com.notes6lite.app.domain.model.DocumentViewMode
 import com.notes6lite.app.domain.model.EraserMode
 import com.notes6lite.app.domain.model.InkPoint
 import com.notes6lite.app.domain.model.PageTemplate
+import com.notes6lite.app.domain.model.PenType
 import com.notes6lite.app.domain.model.SheetStyle
 import com.notes6lite.app.domain.model.Stroke
+import com.notes6lite.app.domain.model.TextElement
 import com.notes6lite.app.domain.model.ToolMode
 import com.notes6lite.app.render.InkPainter
 import com.notes6lite.app.render.SheetPainter
@@ -55,11 +58,23 @@ class NoteCanvasView @JvmOverloads constructor(
             invalidate()
         }
 
+    var penType: PenType = PenType.BALLPOINT
+        set(value) {
+            field = value
+            when (value) {
+                PenType.BALLPOINT -> currentToolMode = ToolMode.PEN
+                PenType.FOUNTAIN -> currentToolMode = ToolMode.PEN
+                PenType.HIGHLIGHTER -> currentToolMode = ToolMode.HIGHLIGHTER
+            }
+            invalidate()
+        }
+
     var currentColor: Int = DEFAULT_INK_COLOR
 
     var penStrokeWidth: Float = 6.5f
     var highlighterStrokeWidth: Float = 28f
     var eraserStrokeWidth: Float = 42f
+    var textFontSize: Float = 20f
 
     /**
      * Como a borracha apaga: objeto (remove o traço inteiro) ou precisa
@@ -83,6 +98,78 @@ class NoteCanvasView @JvmOverloads constructor(
             rebuildAllOutlines()
             invalidate()
         }
+
+    // ---------------------------------------------------------------------
+    // Modo Folha de Rascunho Lateral (Ao lado do PDF)
+    // ---------------------------------------------------------------------
+
+    var isSideScratchpadEnabled: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            updatePageRect()
+            fitPageToScreen()
+            invalidate()
+        }
+
+    val isScratchpadActive: Boolean
+        get() = isSideScratchpadEnabled && backgroundBitmap != null
+
+    val effectivePageWidth: Int
+        get() = if (isScratchpadActive) (pageWidth * 1.55f).toInt() else pageWidth
+
+    // ---------------------------------------------------------------------
+    // Elementos de Texto (Digitação no Canvas)
+    // ---------------------------------------------------------------------
+
+    val textElements = ArrayList<TextElement>()
+    var onCanvasTapForText: ((x: Float, y: Float) -> Unit)? = null
+    var onTextElementTapped: ((TextElement) -> Unit)? = null
+
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = android.graphics.Typeface.SANS_SERIF
+    }
+
+    // ---------------------------------------------------------------------
+    // Botão Físico da Caneta (Compatibilidade Ampla)
+    // ---------------------------------------------------------------------
+
+    private var isHardwareStylusButtonPressed: Boolean = false
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_STYLUS_BUTTON_PRIMARY ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_1 ||
+            keyCode == KeyEvent.KEYCODE_STYLUS_BUTTON_SECONDARY ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_2) {
+            isHardwareStylusButtonPressed = true
+            invalidate()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_STYLUS_BUTTON_PRIMARY ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_1 ||
+            keyCode == KeyEvent.KEYCODE_STYLUS_BUTTON_SECONDARY ||
+            keyCode == KeyEvent.KEYCODE_BUTTON_2) {
+            isHardwareStylusButtonPressed = false
+            invalidate()
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    fun isStylusEraserEvent(event: MotionEvent, pointerIndex: Int): Boolean {
+        val toolType = event.getToolType(pointerIndex)
+        val buttonState = event.buttonState
+        return (buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0 ||
+               (buttonState and MotionEvent.BUTTON_SECONDARY) != 0 ||
+               (buttonState and MotionEvent.BUTTON_STYLUS_SECONDARY) != 0 ||
+               (buttonState and MotionEvent.BUTTON_TERTIARY) != 0 ||
+               toolType == MotionEvent.TOOL_TYPE_ERASER ||
+               isHardwareStylusButtonPressed
+    }
 
     // ---------------------------------------------------------------------
     // Página / template / estilo
@@ -212,6 +299,8 @@ class NoteCanvasView @JvmOverloads constructor(
 
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
+        isFocusable = true
+        isFocusableInTouchMode = true
         sheetPainter.style = sheetStyle
         updatePageRect()
     }
@@ -382,10 +471,11 @@ class NoteCanvasView @JvmOverloads constructor(
                 translateY = height / 2f
             }
         } else {
-            val scaleX = (width * 0.94f) / pageWidth.coerceAtLeast(1).toFloat()
+            val effWidth = effectivePageWidth.coerceAtLeast(1).toFloat()
+            val scaleX = (width * 0.94f) / effWidth
             val scaleY = (height * 0.94f) / pageHeight.coerceAtLeast(1).toFloat()
             scaleFactor = min(scaleX, scaleY).coerceAtLeast(0.05f)
-            translateX = (width - pageWidth * scaleFactor) / 2f
+            translateX = (width - effWidth * scaleFactor) / 2f
             if (isContinuousActive) {
                 val currentTop = getContinuousPageTop(activeContinuousPageIndex)
                 translateY = 24f - currentTop * scaleFactor
@@ -399,7 +489,7 @@ class NoteCanvasView @JvmOverloads constructor(
     }
 
     private fun updatePageRect() {
-        pageRect.set(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat())
+        pageRect.set(0f, 0f, effectivePageWidth.toFloat(), pageHeight.toFloat())
     }
 
     private fun updateMatrix() {
@@ -459,8 +549,47 @@ class NoteCanvasView @JvmOverloads constructor(
     // Entrada: S-Pen (escrita) x dedo (pan/zoom)
     // ---------------------------------------------------------------------
 
+    private var textDownX = 0f
+    private var textDownY = 0f
+    private var isPotentialTextTap = false
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val action = event.actionMasked
+
+        // Modo Texto: toque rápido na folha aciona digitação ou edição
+        if (currentToolMode == ToolMode.TEXT) {
+            when (action) {
+                MotionEvent.ACTION_DOWN -> {
+                    textDownX = event.x
+                    textDownY = event.y
+                    isPotentialTextTap = true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (hypot(event.x - textDownX, event.y - textDownY) > 20f) {
+                        isPotentialTextTap = false
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (isPotentialTextTap && hypot(event.x - textDownX, event.y - textDownY) < 20f) {
+                        mapToPage(event.x, event.y, tempPoint)
+                        val pageX = tempPoint[0]
+                        val pageY = tempPoint[1]
+                        val hit = textElements.findLast { el ->
+                            val textBoundsW = max(el.fontSize * el.text.length * 0.6f, 60f)
+                            val textBoundsH = max(el.fontSize * 1.5f, 40f)
+                            pageX >= el.x && pageX <= el.x + textBoundsW &&
+                                pageY >= el.y - 10f && pageY <= el.y + textBoundsH
+                        }
+                        if (hit != null) {
+                            onTextElementTapped?.invoke(hit)
+                        } else {
+                            onCanvasTapForText?.invoke(pageX, pageY)
+                        }
+                        return true
+                    }
+                }
+            }
+        }
 
         // 1. Localiza qualquer ponteiro de S-Pen no evento.
         var stylusIndex = -1
@@ -535,15 +664,11 @@ class NoteCanvasView @JvmOverloads constructor(
     }
 
     private fun startStroke(event: MotionEvent, pointerIndex: Int) {
-        val toolType = event.getToolType(pointerIndex)
-        // Atalho físico da S-Pen: com o botão lateral pressionado a ferramenta
-        // ativa é ignorada e o traço inteiro vira borracha. Ao soltar o botão,
-        // a próxima stroke volta automaticamente à ferramenta anterior, porque
-        // currentToolMode nunca é alterado aqui.
-        val stylusButtonDown =
-            (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
-        val isStylusEraserButton =
-            toolType == MotionEvent.TOOL_TYPE_ERASER || stylusButtonDown
+        val isStylusEraserButton = isStylusEraserEvent(event, pointerIndex)
+
+        if (currentToolMode == ToolMode.TEXT && !isStylusEraserButton) {
+            return
+        }
 
         activeMode = if (isStylusEraserButton) ToolMode.ERASER else currentToolMode
         activeColor = getEffectiveInkColor(currentColor)
@@ -551,6 +676,7 @@ class NoteCanvasView @JvmOverloads constructor(
             ToolMode.PEN -> penStrokeWidth
             ToolMode.HIGHLIGHTER -> highlighterStrokeWidth
             ToolMode.ERASER -> eraserStrokeWidth
+            ToolMode.TEXT -> penStrokeWidth
         }
 
         val rawPressure = event.getPressure(pointerIndex).coerceIn(0f, 1f)
@@ -607,8 +733,7 @@ class NoteCanvasView @JvmOverloads constructor(
 
     private fun appendMove(event: MotionEvent, pointerIndex: Int) {
         // Monitora o botão lateral da S-Pen durante o movimento (troca imediata para borracha e retorno ao soltar)
-        val stylusButtonDown = (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
-        val isStylusEraser = event.getToolType(pointerIndex) == MotionEvent.TOOL_TYPE_ERASER || stylusButtonDown
+        val isStylusEraser = isStylusEraserEvent(event, pointerIndex)
         val intendedMode = if (isStylusEraser) ToolMode.ERASER else currentToolMode
 
         if (intendedMode != activeMode) {
@@ -968,6 +1093,10 @@ class NoteCanvasView @JvmOverloads constructor(
             drawContinuousContent(canvas, visibleRect)
         } else if (pageTemplate.isInfinite) {
             sheetPainter.drawInfinite(canvas, visibleRect)
+        } else if (isScratchpadActive) {
+            val pdfRect = RectF(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat())
+            val scratchRect = RectF(pageWidth.toFloat(), 0f, effectivePageWidth.toFloat(), pageHeight.toFloat())
+            sheetPainter.drawScratchpadPage(canvas, pdfRect, scratchRect, backgroundBitmap)
         } else {
             pageRect.set(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat())
             sheetPainter.drawPage(canvas, pageRect, backgroundBitmap)
@@ -1008,6 +1137,18 @@ class NoteCanvasView @JvmOverloads constructor(
 
             if (needsInkLayer) {
                 canvas.restoreToCount(layerId)
+            }
+
+            // 3. Desenho de elementos de texto na página
+            for (el in textElements) {
+                textPaint.textSize = el.fontSize
+                textPaint.color = getEffectiveInkColor(el.color)
+                val lines = el.text.split("\n")
+                var lineY = el.y + el.fontSize
+                for (line in lines) {
+                    canvas.drawText(line, el.x, lineY, textPaint)
+                    lineY += el.fontSize * 1.3f
+                }
             }
         } else {
             // Desenho do traço ativo durante a escrita na página correspondente
@@ -1058,6 +1199,7 @@ class NoteCanvasView @JvmOverloads constructor(
 
     fun clearPageStrokes() {
         strokes.clear()
+        textElements.clear()
         erasedBatches.clear()
         hasEraserStrokes = false
         activePoints.clear()
@@ -1085,11 +1227,34 @@ class NoteCanvasView @JvmOverloads constructor(
         targetWidth: Int,
         targetHeight: Int,
         style: SheetStyle = sheetStyle,
-        pressure: Boolean = pressureEnabled
+        pressure: Boolean = pressureEnabled,
+        includeScratchpad: Boolean = false,
+        texts: List<TextElement> = emptyList()
     ) {
         val painter = SheetPainter().apply { this.style = style }
-        val rect = RectF(0f, 0f, targetWidth.toFloat(), targetHeight.toFloat())
-        painter.drawPage(targetCanvas, rect, bgBitmap)
+        if (includeScratchpad && bgBitmap != null && targetWidth > bgBitmap.width) {
+            val pdfRect = RectF(0f, 0f, bgBitmap.width.toFloat(), targetHeight.toFloat())
+            val scratchRect = RectF(bgBitmap.width.toFloat(), 0f, targetWidth.toFloat(), targetHeight.toFloat())
+            painter.drawScratchpadPage(targetCanvas, pdfRect, scratchRect, bgBitmap)
+        } else {
+            val rect = RectF(0f, 0f, targetWidth.toFloat(), targetHeight.toFloat())
+            painter.drawPage(targetCanvas, rect, bgBitmap)
+        }
+
+        // Renderiza textos inseridos
+        val expPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = android.graphics.Typeface.SANS_SERIF
+        }
+        for (el in texts) {
+            expPaint.textSize = el.fontSize
+            expPaint.color = el.color
+            val lines = el.text.split("\n")
+            var lineY = el.y + el.fontSize
+            for (line in lines) {
+                targetCanvas.drawText(line, el.x, lineY, expPaint)
+                lineY += el.fontSize * 1.3f
+            }
+        }
 
         if (pageStrokes.isEmpty()) return
 
@@ -1282,8 +1447,14 @@ class NoteCanvasView @JvmOverloads constructor(
                 val pageBmp = provider.getPageBitmap(i)
                 canvas.save()
                 canvas.translate(0f, currentY)
-                val localRect = RectF(0f, 0f, pw, ph)
-                sheetPainter.drawPage(canvas, localRect, pageBmp)
+                if (isSideScratchpadEnabled && pageBmp != null) {
+                    val pdfRect = RectF(0f, 0f, pageBmp.width.toFloat(), ph)
+                    val scratchRect = RectF(pageBmp.width.toFloat(), 0f, pw, ph)
+                    sheetPainter.drawScratchpadPage(canvas, pdfRect, scratchRect, pageBmp)
+                } else {
+                    val localRect = RectF(0f, 0f, pw, ph)
+                    sheetPainter.drawPage(canvas, localRect, pageBmp)
+                }
 
                 // Desenha os traços já existentes desta página
                 val pageStrokes = provider.getPageStrokes(i)

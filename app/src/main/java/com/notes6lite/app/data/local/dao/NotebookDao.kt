@@ -56,6 +56,12 @@ interface NotebookDao {
     @Query("DELETE FROM notebooks WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
 
+    @Query("SELECT * FROM notebooks WHERE linkedNoteId = :parentNoteId LIMIT 1")
+    suspend fun getSummaryNoteForParent(parentNoteId: Long): NotebookEntity?
+
+    @Query("UPDATE notebooks SET summaryText = :summaryText, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateSummaryText(id: Long, summaryText: String?, updatedAt: Long)
+
     @Delete
     suspend fun delete(notebook: NotebookEntity)
 }

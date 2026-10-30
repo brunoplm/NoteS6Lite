@@ -22,7 +22,7 @@ import com.notes6lite.app.data.local.entity.StrokeEntity
         StrokeEntity::class,
         FolderEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class NoteDatabase : RoomDatabase() {
@@ -35,13 +35,6 @@ abstract class NoteDatabase : RoomDatabase() {
     companion object {
         private const val DATABASE_NAME = "notes6lite.db"
 
-        /**
-         * v1 -> v2: biblioteca de pastas.
-         *
-         * - cria a tabela `folders` (auto-referenciada);
-         * - adiciona `notebooks.folderId` (nulo = raiz), preservando as notas
-         *   que o usuário já tinha.
-         */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -65,6 +58,17 @@ abstract class NoteDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `notebooks` ADD COLUMN `linkedNoteId` INTEGER")
+                db.execSQL("ALTER TABLE `notebooks` ADD COLUMN `summaryText` TEXT")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_notebooks_linkedNoteId` " +
+                        "ON `notebooks` (`linkedNoteId`)"
+                )
+            }
+        }
+
         @Volatile
         private var instance: NoteDatabase? = null
 
@@ -75,7 +79,7 @@ abstract class NoteDatabase : RoomDatabase() {
                     NoteDatabase::class.java,
                     DATABASE_NAME
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { instance = it }

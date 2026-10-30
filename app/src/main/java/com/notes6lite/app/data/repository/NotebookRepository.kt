@@ -142,6 +142,32 @@ class NotebookRepository(private val database: NoteDatabase) {
     suspend fun getNotebooks(): List<Notebook> =
         notebookDao.getAll().map { it.toDomain() }
 
+    suspend fun getSummaryNoteForParent(parentNoteId: Long): Notebook? =
+        notebookDao.getSummaryNoteForParent(parentNoteId)?.toDomain()
+
+    suspend fun saveSummaryText(parentNoteId: Long, parentTitle: String, text: String, folderId: Long?): Long {
+        val now = System.currentTimeMillis()
+        val existing = notebookDao.getSummaryNoteForParent(parentNoteId)
+        return if (existing != null) {
+            notebookDao.updateSummaryText(existing.id, text, now)
+            existing.id
+        } else {
+            notebookDao.insert(
+                NotebookEntity(
+                    title = "[Resumo] $parentTitle",
+                    template = PageTemplate.RULED.name,
+                    sheetStyle = SheetStyle.RULED.name,
+                    createdAt = now,
+                    updatedAt = now,
+                    coverColor = DEFAULT_COVER_COLOR,
+                    folderId = folderId,
+                    linkedNoteId = parentNoteId,
+                    summaryText = text
+                )
+            )
+        }
+    }
+
     suspend fun getNotebook(id: Long): Notebook? =
         notebookDao.getById(id)?.toDomain()
 
@@ -368,7 +394,9 @@ class NotebookRepository(private val database: NoteDatabase) {
         createdAt = createdAt,
         updatedAt = updatedAt,
         coverColor = coverColor,
-        folderId = folderId
+        folderId = folderId,
+        linkedNoteId = linkedNoteId,
+        summaryText = summaryText
     )
 
     private fun PageEntity.toDomain() = NotePage(

@@ -9,5 +9,7 @@ data class Notebook(
     val updatedAt: Long,
     val coverColor: Int,
     /** Pasta onde a nota vive. Nulo = raiz da biblioteca. */
-    val folderId: Long? = null
+    val folderId: Long? = null,
+    val linkedNoteId: Long? = null,
+    val summaryText: String? = null
 )

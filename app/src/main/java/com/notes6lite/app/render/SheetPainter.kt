@@ -104,6 +104,51 @@ class SheetPainter {
         canvas.drawRect(pageRect, borderPaint)
     }
 
+    /**
+     * Renderiza o modo Folha de Rascunho Lateral:
+     * PDF no lado esquerdo ([pdfRect]) e folha de rascunho com o padrão
+     * escolhido ([scratchpadRect]) no lado direito, separados por linha divisória nítida.
+     */
+    fun drawScratchpadPage(
+        canvas: Canvas,
+        pdfRect: RectF,
+        scratchpadRect: RectF,
+        backgroundBitmap: Bitmap?
+    ) {
+        // 1. Fundo do PDF à esquerda
+        backgroundPaint.color = palette.background
+        canvas.drawRect(pdfRect, backgroundPaint)
+
+        canvas.save()
+        canvas.clipRect(pdfRect)
+        if (backgroundBitmap != null && !backgroundBitmap.isRecycled) {
+            canvas.drawBitmap(backgroundBitmap, null, pdfRect, bitmapPaint)
+        } else {
+            drawPattern(canvas, pdfRect)
+        }
+        canvas.restore()
+
+        // 2. Fundo e padrão do Rascunho à direita
+        canvas.drawRect(scratchpadRect, backgroundPaint)
+        canvas.save()
+        canvas.clipRect(scratchpadRect)
+        drawPattern(canvas, scratchpadRect)
+        canvas.restore()
+
+        // 3. Linha divisória vertical nítida
+        canvas.drawLine(
+            scratchpadRect.left,
+            scratchpadRect.top,
+            scratchpadRect.left,
+            scratchpadRect.bottom,
+            marginPaint
+        )
+
+        // 4. Borda externa completa
+        val fullRect = RectF(pdfRect.left, pdfRect.top, scratchpadRect.right, pdfRect.bottom)
+        canvas.drawRect(fullRect, borderPaint)
+    }
+
     fun drawInfinite(canvas: Canvas, visibleRect: RectF) {
         backgroundPaint.color = palette.background
         canvas.drawRect(visibleRect, backgroundPaint)

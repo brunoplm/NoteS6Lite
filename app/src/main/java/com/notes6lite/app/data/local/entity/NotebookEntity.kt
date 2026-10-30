@@ -14,7 +14,7 @@ import androidx.room.PrimaryKey
  */
 @Entity(
     tableName = "notebooks",
-    indices = [Index("folderId")]
+    indices = [Index("folderId"), Index("linkedNoteId")]
 )
 data class NotebookEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -24,5 +24,7 @@ data class NotebookEntity(
     val createdAt: Long,
     val updatedAt: Long,
     val coverColor: Int,
-    val folderId: Long? = null
+    val folderId: Long? = null,
+    val linkedNoteId: Long? = null,
+    val summaryText: String? = null
 )

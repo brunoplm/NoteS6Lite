@@ -11,8 +11,12 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import android.view.KeyEvent
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -29,10 +33,13 @@ import com.notes6lite.app.domain.model.EraserMode
 import com.notes6lite.app.domain.model.NotePage
 import com.notes6lite.app.domain.model.Notebook
 import com.notes6lite.app.domain.model.PageTemplate
+import com.notes6lite.app.domain.model.PenType
 import com.notes6lite.app.domain.model.SheetStyle
 import com.notes6lite.app.domain.model.Stroke
+import com.notes6lite.app.domain.model.TextElement
 import com.notes6lite.app.domain.model.ToolMode
 import com.notes6lite.app.render.InkPainter
+import com.notes6lite.app.render.SheetPainter
 import com.notes6lite.app.render.StrokeOutlineBuilder
 import com.notes6lite.app.ui.NotesViewModel
 import kotlinx.coroutines.Dispatchers
@@ -58,27 +65,75 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var canvasView: NoteCanvasView
-    private lateinit var tvPageIndicator: TextView
     private lateinit var tvNotebookTitle: TextView
 
-    private lateinit var btnToolPen: Button
-    private lateinit var btnToolHighlighter: Button
-    private lateinit var btnToolEraser: Button
-    private lateinit var btnEraserMode: Button
+    // Top Category Tabs
+    private lateinit var tabPen: Button
+    private lateinit var tabEraser: Button
+    private lateinit var tabText: Button
+    private lateinit var tabBackground: Button
+    private lateinit var tabPagePdf: Button
+    private lateinit var subBarContainer: FrameLayout
+
+    // Sub-Bars
+    private lateinit var subBarPen: LinearLayout
+    private lateinit var subBarEraser: LinearLayout
+    private lateinit var subBarText: LinearLayout
+    private lateinit var subBarBackground: LinearLayout
+    private lateinit var subBarPagePdf: LinearLayout
+
+    // Pen Sub-bar controls
+    private lateinit var btnPenBallpoint: Button
+    private lateinit var btnPenFountain: Button
+    private lateinit var btnPenHighlighter: Button
     private lateinit var seekStroke: SeekBar
     private lateinit var tvStrokeValue: TextView
     private lateinit var presetButtons: List<Button>
+
+    // Eraser Sub-bar controls
+    private lateinit var btnEraserMode: Button
+    private lateinit var seekEraserStroke: SeekBar
+    private lateinit var tvEraserStrokeValue: TextView
+    private lateinit var btnClearPage: Button
+
+    // Text Sub-bar controls
+    private lateinit var seekTextSize: SeekBar
+    private lateinit var tvTextSizeValue: TextView
+    private var currentTextFontSize = 20f
+    private var currentTextColor = Color.parseColor("#111827")
+
+    // Background Sub-bar controls
     private lateinit var btnTemplate: Button
     private lateinit var btnStyle: Button
     private lateinit var btnPressure: Button
+
+    // Page / PDF Sub-bar controls
     private lateinit var btnPrevPage: Button
+    private lateinit var tvPageIndicator: TextView
     private lateinit var btnNextPage: Button
     private lateinit var btnAddPage: Button
     private lateinit var btnViewMode: Button
+    private lateinit var btnSideScratchpad: Button
+    private lateinit var btnOpenPdf: Button
+    private lateinit var btnSavePdf: Button
+
+    // Floating Footnote / Summary Note controls
+    private lateinit var btnSummaryPill: Button
+    private lateinit var cardSummaryPanel: LinearLayout
+    private lateinit var tvSummaryTitle: TextView
+    private lateinit var btnSummarySizeToggle: Button
+    private lateinit var btnSummaryMinimize: Button
+    private lateinit var etSummaryContent: EditText
+    private var summaryAutosaveJob: Job? = null
+    private var isSummaryExpanded = false
+
+    private enum class CategoryTab {
+        PEN, ERASER, TEXT, BACKGROUND, PAGE_PDF
+    }
+    private var activeTab: CategoryTab = CategoryTab.PEN
 
     /** Espessura + cor guardadas em cada botão de preset (P1..P3). */
     private data class InkPreset(val width: Float, val color: Int)
-
     private val presets = arrayOfNulls<InkPreset>(PRESET_COUNT)
     private val presetPrefs by lazy {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
@@ -100,6 +155,7 @@ class MainActivity : AppCompatActivity() {
     private var currentPageIndex = 0
     private var totalPages = 1
     private var autosaveJob: Job? = null
+    private var exportWithScratchpad: Boolean = false
 
     private val openPdfLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -118,11 +174,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         bindViews()
-        setupToolbarActions()
+        setupCategoryTabs()
+        setupSubBarControls()
+        setupSummaryPanel()
         loadPresets()
         updateStrokeControls()
-        updateEraserModeButton()
+        updateEraserControls()
         updateViewModeButton()
+        updateSideScratchpadButton()
 
         canvasView.onStrokeCommitted = {
             if (!canvasView.isContinuousActive) {
@@ -136,6 +195,14 @@ class MainActivity : AppCompatActivity() {
                 currentPageIndex = newIndex
                 updatePageIndicator()
             }
+        }
+
+        // Digitação no Canvas (ToolMode.TEXT)
+        canvasView.onCanvasTapForText = { x, y ->
+            showTextInputDialog(x, y, null)
+        }
+        canvasView.onTextElementTapped = { element ->
+            showTextInputDialog(element.x, element.y, element)
         }
 
         setupContinuousProvider()
@@ -157,15 +224,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (canvasView.onKeyDown(keyCode, event)) return true
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (canvasView.onKeyUp(keyCode, event)) return true
+        return super.onKeyUp(keyCode, event)
+    }
+
     private fun bindViews() {
         canvasView = findViewById(R.id.noteCanvasView)
-        tvPageIndicator = findViewById(R.id.tvPageIndicator)
         tvNotebookTitle = findViewById(R.id.tvNotebookTitle)
 
-        btnToolPen = findViewById(R.id.btnToolPen)
-        btnToolHighlighter = findViewById(R.id.btnToolHighlighter)
-        btnToolEraser = findViewById(R.id.btnToolEraser)
-        btnEraserMode = findViewById(R.id.btnEraserMode)
+        tabPen = findViewById(R.id.tabPen)
+        tabEraser = findViewById(R.id.tabEraser)
+        tabText = findViewById(R.id.tabText)
+        tabBackground = findViewById(R.id.tabBackground)
+        tabPagePdf = findViewById(R.id.tabPagePdf)
+        subBarContainer = findViewById(R.id.subBarContainer)
+
+        subBarPen = findViewById(R.id.subBarPen)
+        subBarEraser = findViewById(R.id.subBarEraser)
+        subBarText = findViewById(R.id.subBarText)
+        subBarBackground = findViewById(R.id.subBarBackground)
+        subBarPagePdf = findViewById(R.id.subBarPagePdf)
+
+        btnPenBallpoint = findViewById(R.id.btnPenBallpoint)
+        btnPenFountain = findViewById(R.id.btnPenFountain)
+        btnPenHighlighter = findViewById(R.id.btnPenHighlighter)
         seekStroke = findViewById(R.id.seekStroke)
         tvStrokeValue = findViewById(R.id.tvStrokeValue)
         presetButtons = listOf(
@@ -173,14 +261,458 @@ class MainActivity : AppCompatActivity() {
             findViewById(R.id.btnPreset2),
             findViewById(R.id.btnPreset3)
         )
+
+        btnEraserMode = findViewById(R.id.btnEraserMode)
+        seekEraserStroke = findViewById(R.id.seekEraserStroke)
+        tvEraserStrokeValue = findViewById(R.id.tvEraserStrokeValue)
+        btnClearPage = findViewById(R.id.btnClearPage)
+
+        seekTextSize = findViewById(R.id.seekTextSize)
+        tvTextSizeValue = findViewById(R.id.tvTextSizeValue)
+
         btnTemplate = findViewById(R.id.btnTemplate)
         btnStyle = findViewById(R.id.btnStyle)
         btnPressure = findViewById(R.id.btnPressure)
+
         btnPrevPage = findViewById(R.id.btnPrevPage)
+        tvPageIndicator = findViewById(R.id.tvPageIndicator)
         btnNextPage = findViewById(R.id.btnNextPage)
         btnAddPage = findViewById(R.id.btnAddPage)
         btnViewMode = findViewById(R.id.btnViewMode)
+        btnSideScratchpad = findViewById(R.id.btnSideScratchpad)
+        btnOpenPdf = findViewById(R.id.btnOpenPdf)
+        btnSavePdf = findViewById(R.id.btnSavePdf)
+
+        btnSummaryPill = findViewById(R.id.btnSummaryPill)
+        cardSummaryPanel = findViewById(R.id.cardSummaryPanel)
+        tvSummaryTitle = findViewById(R.id.tvSummaryTitle)
+        btnSummarySizeToggle = findViewById(R.id.btnSummarySizeToggle)
+        btnSummaryMinimize = findViewById(R.id.btnSummaryMinimize)
+        etSummaryContent = findViewById(R.id.etSummaryContent)
+
+        findViewById<Button>(R.id.btnHome).setOnClickListener { finish() }
+        findViewById<Button>(R.id.btnUndo).setOnClickListener {
+            canvasView.undo()
+            if (!canvasView.isContinuousActive) {
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            }
+            scheduleAutosave()
+        }
+        findViewById<Button>(R.id.btnResetZoom).setOnClickListener {
+            canvasView.fitPageToScreen()
+        }
     }
+
+    // ---------------------------------------------------------------------
+    // Abas de Categorias & Sub-Barras
+    // ---------------------------------------------------------------------
+
+    private fun setupCategoryTabs() {
+        tabPen.setOnClickListener { selectCategoryTab(CategoryTab.PEN) }
+        tabEraser.setOnClickListener { selectCategoryTab(CategoryTab.ERASER) }
+        tabText.setOnClickListener { selectCategoryTab(CategoryTab.TEXT) }
+        tabBackground.setOnClickListener { selectCategoryTab(CategoryTab.BACKGROUND) }
+        tabPagePdf.setOnClickListener { selectCategoryTab(CategoryTab.PAGE_PDF) }
+    }
+
+    private fun selectCategoryTab(tab: CategoryTab) {
+        if (activeTab == tab && subBarContainer.visibility == View.VISIBLE) {
+            subBarContainer.visibility = View.GONE
+            return
+        }
+        activeTab = tab
+        subBarContainer.visibility = View.VISIBLE
+
+        subBarPen.visibility = if (tab == CategoryTab.PEN) View.VISIBLE else View.GONE
+        subBarEraser.visibility = if (tab == CategoryTab.ERASER) View.VISIBLE else View.GONE
+        subBarText.visibility = if (tab == CategoryTab.TEXT) View.VISIBLE else View.GONE
+        subBarBackground.visibility = if (tab == CategoryTab.BACKGROUND) View.VISIBLE else View.GONE
+        subBarPagePdf.visibility = if (tab == CategoryTab.PAGE_PDF) View.VISIBLE else View.GONE
+
+        val activeTint = ColorStateList.valueOf(COLOR_ACCENT)
+        val idleTint = ColorStateList.valueOf(COLOR_TOOL_IDLE)
+
+        tabPen.backgroundTintList = if (tab == CategoryTab.PEN) activeTint else idleTint
+        tabEraser.backgroundTintList = if (tab == CategoryTab.ERASER) activeTint else idleTint
+        tabText.backgroundTintList = if (tab == CategoryTab.TEXT) activeTint else idleTint
+        tabBackground.backgroundTintList = if (tab == CategoryTab.BACKGROUND) activeTint else idleTint
+        tabPagePdf.backgroundTintList = if (tab == CategoryTab.PAGE_PDF) activeTint else idleTint
+
+        when (tab) {
+            CategoryTab.PEN -> {
+                when (canvasView.penType) {
+                    PenType.BALLPOINT, PenType.FOUNTAIN -> canvasView.currentToolMode = ToolMode.PEN
+                    PenType.HIGHLIGHTER -> canvasView.currentToolMode = ToolMode.HIGHLIGHTER
+                }
+                updateStrokeControls()
+            }
+            CategoryTab.ERASER -> {
+                canvasView.currentToolMode = ToolMode.ERASER
+                updateEraserControls()
+            }
+            CategoryTab.TEXT -> {
+                canvasView.currentToolMode = ToolMode.TEXT
+            }
+            else -> Unit
+        }
+    }
+
+    private fun setupSubBarControls() {
+        // Caneta: tipos
+        btnPenBallpoint.setOnClickListener {
+            canvasView.penType = PenType.BALLPOINT
+            updatePenTypeButtons(PenType.BALLPOINT)
+            updateStrokeControls()
+        }
+        btnPenFountain.setOnClickListener {
+            canvasView.penType = PenType.FOUNTAIN
+            updatePenTypeButtons(PenType.FOUNTAIN)
+            updateStrokeControls()
+        }
+        btnPenHighlighter.setOnClickListener {
+            canvasView.penType = PenType.HIGHLIGHTER
+            updatePenTypeButtons(PenType.HIGHLIGHTER)
+            updateStrokeControls()
+        }
+
+        // Caneta: espessura
+        seekStroke.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                applyStrokeWidth(progress.toFloat())
+            }
+            override fun onStartTrackingTouch(bar: SeekBar) = Unit
+            override fun onStopTrackingTouch(bar: SeekBar) = Unit
+        })
+
+        // Presets favoritos P1..P3
+        presetButtons.forEachIndexed { index, button ->
+            button.setOnClickListener { applyPreset(index) }
+            button.setOnLongClickListener {
+                savePreset(index)
+                true
+            }
+        }
+
+        // Cores de caneta
+        findViewById<Button>(R.id.btnColorBlack).setOnClickListener { setInkColor(Color.parseColor("#111827")) }
+        findViewById<Button>(R.id.btnColorBlue).setOnClickListener { setInkColor(Color.parseColor("#1D4ED8")) }
+        findViewById<Button>(R.id.btnColorRed).setOnClickListener { setInkColor(Color.parseColor("#DC2626")) }
+        findViewById<Button>(R.id.btnColorGreen).setOnClickListener { setInkColor(Color.parseColor("#059669")) }
+        findViewById<Button>(R.id.btnColorYellow).setOnClickListener {
+            setInkColor(Color.parseColor("#FACC15"))
+            canvasView.penType = PenType.HIGHLIGHTER
+            updatePenTypeButtons(PenType.HIGHLIGHTER)
+            updateStrokeControls()
+        }
+
+        // Borracha: modo e slider
+        btnEraserMode.setOnClickListener {
+            canvasView.eraserMode = canvasView.eraserMode.toggle()
+            updateEraserControls()
+        }
+        seekEraserStroke.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                canvasView.eraserStrokeWidth = progress.toFloat()
+                tvEraserStrokeValue.text = progress.toString()
+            }
+            override fun onStartTrackingTouch(bar: SeekBar) = Unit
+            override fun onStopTrackingTouch(bar: SeekBar) = Unit
+        })
+        btnClearPage.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Limpar página")
+                .setMessage("Apagar todos os traços desta página? O fundo será preservado.")
+                .setPositiveButton("Limpar") { _, _ ->
+                    canvasView.clearPageStrokes()
+                    pageStrokesMap[currentPageIndex] = emptyList()
+                    scheduleAutosave()
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
+        }
+
+        // Texto: tamanho da fonte e cores
+        seekTextSize.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                currentTextFontSize = (12 + progress).toFloat()
+                tvTextSizeValue.text = "${currentTextFontSize.toInt()}sp"
+            }
+            override fun onStartTrackingTouch(bar: SeekBar) = Unit
+            override fun onStopTrackingTouch(bar: SeekBar) = Unit
+        })
+        findViewById<Button>(R.id.btnTextColorBlack).setOnClickListener { currentTextColor = Color.parseColor("#111827") }
+        findViewById<Button>(R.id.btnTextColorBlue).setOnClickListener { currentTextColor = Color.parseColor("#1D4ED8") }
+        findViewById<Button>(R.id.btnTextColorRed).setOnClickListener { currentTextColor = Color.parseColor("#DC2626") }
+        findViewById<Button>(R.id.btnTextColorWhite).setOnClickListener { currentTextColor = Color.parseColor("#F8FAFC") }
+
+        // Fundo
+        btnTemplate.setOnClickListener { showTemplateDialog() }
+        btnStyle.setOnClickListener { showStyleDialog() }
+        btnPressure.setOnClickListener {
+            canvasView.pressureEnabled = !canvasView.pressureEnabled
+            updateToolbarState()
+        }
+
+        // Página / PDF
+        btnViewMode.setOnClickListener {
+            val nextMode = canvasView.viewMode.toggle()
+            canvasView.viewMode = nextMode
+            updateViewModeButton()
+            if (nextMode == DocumentViewMode.CONTINUOUS) {
+                canvasView.scrollToPage(currentPageIndex)
+                Toast.makeText(this, "Modo Rolo Contínuo ativado (role a página)", Toast.LENGTH_SHORT).show()
+            } else {
+                renderCurrentPage()
+                Toast.makeText(this, "Modo Página Única ativado", Toast.LENGTH_SHORT).show()
+            }
+        }
+        btnSideScratchpad.setOnClickListener {
+            canvasView.isSideScratchpadEnabled = !canvasView.isSideScratchpadEnabled
+            updateSideScratchpadButton()
+            if (canvasView.isContinuousActive) {
+                canvasView.fitPageToScreen()
+            }
+            Toast.makeText(
+                this,
+                if (canvasView.isSideScratchpadEnabled) "Rascunho Lateral ativado ao lado do PDF!" else "Rascunho Lateral desativado.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        btnPrevPage.setOnClickListener {
+            if (currentPageIndex > 0) {
+                if (!canvasView.isContinuousActive) {
+                    pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                }
+                currentPageIndex = (currentPageIndex - 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+                if (canvasView.isContinuousActive) {
+                    canvasView.scrollToPage(currentPageIndex)
+                    updatePageIndicator()
+                } else {
+                    renderCurrentPage()
+                }
+            }
+        }
+        btnNextPage.setOnClickListener {
+            if (currentPageIndex < totalPages - 1) {
+                if (!canvasView.isContinuousActive) {
+                    pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+                }
+                currentPageIndex = (currentPageIndex + 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+                if (canvasView.isContinuousActive) {
+                    canvasView.scrollToPage(currentPageIndex)
+                    updatePageIndicator()
+                } else {
+                    renderCurrentPage()
+                }
+            }
+        }
+        btnAddPage.setOnClickListener {
+            if (!canvasView.isContinuousActive) {
+                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
+            }
+            if (pdfRenderer == null && currentNotebook != null) {
+                lifecycleScope.launch {
+                    val notebook = currentNotebook ?: return@launch
+                    val nextIndex = totalPages
+                    viewModel.ensurePage(
+                        notebookId = notebook.id,
+                        pageIndex = nextIndex,
+                        template = canvasView.pageTemplate,
+                        sheetStyle = canvasView.sheetStyle
+                    )
+                    totalPages = nextIndex + 1
+                    currentPageIndex = nextIndex
+                    loadNotebookPage(nextIndex)
+                }
+            } else {
+                totalPages++
+                currentPageIndex = totalPages - 1
+                if (canvasView.isContinuousActive) {
+                    canvasView.scrollToPage(currentPageIndex)
+                    updatePageIndicator()
+                } else {
+                    renderCurrentPage()
+                }
+            }
+        }
+        btnOpenPdf.setOnClickListener {
+            openPdfLauncher.launch(arrayOf("application/pdf"))
+        }
+        btnSavePdf.setOnClickListener {
+            if (pdfRenderer != null) {
+                AlertDialog.Builder(this)
+                    .setTitle("Exportar PDF Anotado")
+                    .setMessage("Como deseja exportar?")
+                    .setPositiveButton("Com Rascunho Lateral") { _, _ ->
+                        exportWithScratchpad = true
+                        savePdfLauncher.launch("Estudo_Rascunho_${System.currentTimeMillis() / 1000}.pdf")
+                    }
+                    .setNegativeButton("Apenas PDF Original") { _, _ ->
+                        exportWithScratchpad = false
+                        savePdfLauncher.launch("Estudo_Original_${System.currentTimeMillis() / 1000}.pdf")
+                    }
+                    .setNeutralButton("Cancelar", null)
+                    .show()
+            } else {
+                exportWithScratchpad = false
+                savePdfLauncher.launch("Caderno_${System.currentTimeMillis() / 1000}.pdf")
+            }
+        }
+    }
+
+    private fun updatePenTypeButtons(type: PenType) {
+        val activeTint = ColorStateList.valueOf(COLOR_ACCENT)
+        val idleTint = ColorStateList.valueOf(COLOR_TOOL_IDLE)
+
+        btnPenBallpoint.backgroundTintList = if (type == PenType.BALLPOINT) activeTint else idleTint
+        btnPenFountain.backgroundTintList = if (type == PenType.FOUNTAIN) activeTint else idleTint
+        btnPenHighlighter.backgroundTintList = if (type == PenType.HIGHLIGHTER) activeTint else idleTint
+    }
+
+    private fun updateEraserControls() {
+        val mode = canvasView.eraserMode
+        btnEraserMode.text = "Borracha: ${mode.displayName}"
+        btnEraserMode.backgroundTintList = ColorStateList.valueOf(
+            if (mode == EraserMode.STROKE) COLOR_ACCENT else COLOR_TOOL_IDLE
+        )
+        seekEraserStroke.progress = canvasView.eraserStrokeWidth.toInt().coerceIn(10, 70)
+        tvEraserStrokeValue.text = "${canvasView.eraserStrokeWidth.toInt()}"
+    }
+
+    private fun updateSideScratchpadButton() {
+        if (canvasView.isSideScratchpadEnabled) {
+            btnSideScratchpad.text = "Rascunho Lateral: ON"
+            btnSideScratchpad.backgroundTintList = ColorStateList.valueOf(COLOR_ACCENT)
+        } else {
+            btnSideScratchpad.text = "Rascunho Lateral: OFF"
+            btnSideScratchpad.backgroundTintList = ColorStateList.valueOf(COLOR_TOOL_IDLE)
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Diálogo de Inserção de Texto no Canvas
+    // ---------------------------------------------------------------------
+
+    private fun showTextInputDialog(x: Float, y: Float, existing: TextElement?) {
+        val input = EditText(this).apply {
+            setText(existing?.text ?: "")
+            setSelection(text.length)
+            hint = "Digite suas anotações aqui..."
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#1E293B"))
+            setPadding(32, 24, 32, 24)
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "Inserir Texto na Folha" else "Editar Texto")
+            .setView(input)
+            .setPositiveButton("Salvar") { _, _ ->
+                val newText = input.text.toString().trim()
+                if (newText.isNotEmpty()) {
+                    if (existing != null) {
+                        existing.text = newText
+                        existing.fontSize = currentTextFontSize
+                        existing.color = currentTextColor
+                    } else {
+                        canvasView.textElements.add(
+                            TextElement(
+                                text = newText,
+                                x = x,
+                                y = y,
+                                fontSize = currentTextFontSize,
+                                color = currentTextColor
+                            )
+                        )
+                    }
+                    canvasView.invalidate()
+                    scheduleAutosave()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+
+        if (existing != null) {
+            builder.setNeutralButton("Excluir") { _, _ ->
+                canvasView.textElements.remove(existing)
+                canvasView.invalidate()
+                scheduleAutosave()
+            }
+        }
+
+        builder.show()
+    }
+
+    // ---------------------------------------------------------------------
+    // Painel Flutuante / Footnote (Resumo Vinculado)
+    // ---------------------------------------------------------------------
+
+    private fun setupSummaryPanel() {
+        btnSummaryPill.setOnClickListener {
+            btnSummaryPill.visibility = View.GONE
+            cardSummaryPanel.visibility = View.VISIBLE
+            val params = cardSummaryPanel.layoutParams
+            params.height = (resources.displayMetrics.heightPixels * 0.35f).toInt()
+            cardSummaryPanel.layoutParams = params
+            isSummaryExpanded = false
+            btnSummarySizeToggle.text = "⤢ 70%"
+        }
+
+        btnSummaryMinimize.setOnClickListener {
+            cardSummaryPanel.visibility = View.GONE
+            btnSummaryPill.visibility = View.VISIBLE
+        }
+
+        btnSummarySizeToggle.setOnClickListener {
+            val params = cardSummaryPanel.layoutParams
+            if (isSummaryExpanded) {
+                params.height = (resources.displayMetrics.heightPixels * 0.35f).toInt()
+                isSummaryExpanded = false
+                btnSummarySizeToggle.text = "⤢ 70%"
+            } else {
+                params.height = (resources.displayMetrics.heightPixels * 0.70f).toInt()
+                isSummaryExpanded = true
+                btnSummarySizeToggle.text = "⤡ 35%"
+            }
+            cardSummaryPanel.layoutParams = params
+        }
+
+        etSummaryContent.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                scheduleSummarySave()
+            }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+    }
+
+    private fun loadSummaryForCurrentNotebook() {
+        val nb = currentNotebook ?: return
+        tvSummaryTitle.text = "📝 [Resumo] ${nb.title}"
+        lifecycleScope.launch {
+            val summaryNote = viewModel.getSummaryNote(nb.id)
+            if (summaryNote != null) {
+                etSummaryContent.setText(summaryNote.summaryText ?: "")
+            } else {
+                etSummaryContent.setText("")
+            }
+        }
+    }
+
+    private fun scheduleSummarySave() {
+        summaryAutosaveJob?.cancel()
+        summaryAutosaveJob = lifecycleScope.launch {
+            delay(500)
+            val nb = currentNotebook ?: return@launch
+            val text = etSummaryContent.text.toString()
+            viewModel.saveSummary(nb.id, nb.title, text, nb.folderId)
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Provider Contínuo de Documento
+    // ---------------------------------------------------------------------
 
     private fun setupContinuousProvider() {
         canvasView.continuousProvider = object : NoteCanvasView.ContinuousDocumentProvider {
@@ -194,7 +726,8 @@ class MainActivity : AppCompatActivity() {
                     val h = page?.height ?: PageTemplate.DEFAULT_HEIGHT
                     val target = pdfPageTargetSize(w, h)
                     page?.close()
-                    return target.first
+                    val baseWidth = target.first
+                    return if (canvasView.isSideScratchpadEnabled) (baseWidth * 1.55f).toInt() else baseWidth
                 }
                 return PageTemplate.DEFAULT_WIDTH
             }
@@ -250,7 +783,7 @@ class MainActivity : AppCompatActivity() {
 
     private suspend fun createDefaultNotebook() {
         val id = viewModel.createNotebook(
-            title = "Minha primeira nota",
+            title = "Minhas Anotações",
             template = PageTemplate.GRID,
             sheetStyle = SheetStyle.GRID
         )
@@ -271,6 +804,7 @@ class MainActivity : AppCompatActivity() {
         totalPages = viewModel.pageCount(id).coerceAtLeast(1)
         tvNotebookTitle.text = notebook.title
 
+        loadSummaryForCurrentNotebook()
         loadNotebookPage(0)
     }
 
@@ -346,9 +880,10 @@ class MainActivity : AppCompatActivity() {
         tvNotebookTitle.text = notebook?.title ?: "NoteS6Lite"
         btnTemplate.text = "Template: ${canvasView.pageTemplate.displayName}"
         btnStyle.text = "Folha: ${canvasView.sheetStyle.displayName}"
-        btnPressure.text = if (canvasView.pressureEnabled) "Pressão ON" else "Pressão OFF"
+        btnPressure.text = if (canvasView.pressureEnabled) "Pressão S-Pen: ON" else "Pressão S-Pen: OFF"
 
-        updateEraserModeButton()
+        updateSideScratchpadButton()
+        updateEraserControls()
         updateViewModeButton()
         updateStrokeControls()
         updatePageIndicator()
@@ -364,180 +899,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // Barra de ferramentas
-    // ---------------------------------------------------------------------
-
-    private fun setupToolbarActions() {
-        findViewById<Button>(R.id.btnOpenPdf).setOnClickListener {
-            openPdfLauncher.launch(arrayOf("application/pdf"))
-        }
-
-        findViewById<Button>(R.id.btnSavePdf).setOnClickListener {
-            savePdfLauncher.launch("Estudo_Anotado_${System.currentTimeMillis() / 1000}.pdf")
-        }
-
-        findViewById<Button>(R.id.btnHome).setOnClickListener {
-            finish()
-        }
-
-        findViewById<Button>(R.id.btnNotebooks).setOnClickListener {
-            showNotebooksDialog()
-        }
-
-        // Alterna entre Rolo Contínuo e Página Única
-        btnViewMode.setOnClickListener {
-            val nextMode = canvasView.viewMode.toggle()
-            canvasView.viewMode = nextMode
-            updateViewModeButton()
-
-            if (nextMode == DocumentViewMode.CONTINUOUS) {
-                canvasView.scrollToPage(currentPageIndex)
-                Toast.makeText(this, "Modo Rolo Contínuo ativado (role para cima/baixo)", Toast.LENGTH_SHORT).show()
-            } else {
-                renderCurrentPage()
-                Toast.makeText(this, "Modo Página Única ativado (use ◀ e ▶)", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        // Navegação de páginas (funciona tanto no modo Página quanto rola no modo Contínuo)
-        btnPrevPage.setOnClickListener {
-            if (currentPageIndex > 0) {
-                if (!canvasView.isContinuousActive) {
-                    pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
-                }
-                currentPageIndex = (currentPageIndex - 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
-                if (canvasView.isContinuousActive) {
-                    canvasView.scrollToPage(currentPageIndex)
-                    updatePageIndicator()
-                } else {
-                    renderCurrentPage()
-                }
-            }
-        }
-
-        btnNextPage.setOnClickListener {
-            if (currentPageIndex < totalPages - 1) {
-                if (!canvasView.isContinuousActive) {
-                    pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
-                }
-                currentPageIndex = (currentPageIndex + 1).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
-                if (canvasView.isContinuousActive) {
-                    canvasView.scrollToPage(currentPageIndex)
-                    updatePageIndicator()
-                } else {
-                    renderCurrentPage()
-                }
-            }
-        }
-
-        btnAddPage.setOnClickListener {
-            if (!canvasView.isContinuousActive) {
-                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
-            }
-            if (pdfRenderer == null && currentNotebook != null) {
-                lifecycleScope.launch {
-                    val notebook = currentNotebook ?: return@launch
-                    val nextIndex = totalPages
-                    viewModel.ensurePage(
-                        notebookId = notebook.id,
-                        pageIndex = nextIndex,
-                        template = canvasView.pageTemplate,
-                        sheetStyle = canvasView.sheetStyle
-                    )
-                    totalPages = nextIndex + 1
-                    currentPageIndex = nextIndex
-                    loadNotebookPage(nextIndex)
-                }
-            } else {
-                totalPages++
-                currentPageIndex = totalPages - 1
-                if (canvasView.isContinuousActive) {
-                    canvasView.scrollToPage(currentPageIndex)
-                    updatePageIndicator()
-                } else {
-                    renderCurrentPage()
-                }
-            }
-        }
-
-        btnToolPen.setOnClickListener { selectTool(ToolMode.PEN) }
-        btnToolHighlighter.setOnClickListener { selectTool(ToolMode.HIGHLIGHTER) }
-        btnToolEraser.setOnClickListener { selectTool(ToolMode.ERASER) }
-
-        btnEraserMode.setOnClickListener {
-            canvasView.eraserMode = canvasView.eraserMode.toggle()
-            updateEraserModeButton()
-        }
-
-        findViewById<Button>(R.id.btnUndo).setOnClickListener {
-            canvasView.undo()
-            if (!canvasView.isContinuousActive) {
-                pageStrokesMap[currentPageIndex] = canvasView.getStrokesCopy()
-            }
-            scheduleAutosave()
-        }
-
-        findViewById<Button>(R.id.btnClearPage).setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle("Limpar página")
-                .setMessage("Apagar todos os traços desta página? O fundo será preservado.")
-                .setPositiveButton("Limpar") { _, _ ->
-                    canvasView.clearPageStrokes()
-                    pageStrokesMap[currentPageIndex] = emptyList()
-                    scheduleAutosave()
-                }
-                .setNegativeButton("Cancelar", null)
-                .show()
-        }
-
-        setupStrokeControls()
-
-        findViewById<Button>(R.id.btnColorBlack).setOnClickListener {
-            setInkColor(Color.parseColor("#111827"))
-        }
-        findViewById<Button>(R.id.btnColorBlue).setOnClickListener {
-            setInkColor(Color.parseColor("#1D4ED8"))
-        }
-        findViewById<Button>(R.id.btnColorRed).setOnClickListener {
-            setInkColor(Color.parseColor("#DC2626"))
-        }
-        findViewById<Button>(R.id.btnColorGreen).setOnClickListener {
-            setInkColor(Color.parseColor("#059669"))
-        }
-        findViewById<Button>(R.id.btnColorYellow).setOnClickListener {
-            setInkColor(Color.parseColor("#FACC15"))
-            selectTool(ToolMode.HIGHLIGHTER)
-        }
-
-        findViewById<Button>(R.id.btnResetZoom).setOnClickListener {
-            canvasView.fitPageToScreen()
-        }
-
-        btnTemplate.setOnClickListener { showTemplateDialog() }
-        btnStyle.setOnClickListener { showStyleDialog() }
-        btnPressure.setOnClickListener {
-            canvasView.pressureEnabled = !canvasView.pressureEnabled
-            updateToolbarState()
-        }
-    }
-
-    private fun selectTool(mode: ToolMode) {
-        canvasView.currentToolMode = mode
-
-        val activeTint = ColorStateList.valueOf(COLOR_ACCENT)
-        val inactiveTint = ColorStateList.valueOf(COLOR_TOOL_IDLE)
-
-        btnToolPen.backgroundTintList =
-            if (mode == ToolMode.PEN) activeTint else inactiveTint
-        btnToolHighlighter.backgroundTintList =
-            if (mode == ToolMode.HIGHLIGHTER) activeTint else inactiveTint
-        btnToolEraser.backgroundTintList =
-            if (mode == ToolMode.ERASER) activeTint else inactiveTint
-
-        updateStrokeControls()
-    }
-
     private fun setInkColor(color: Int) {
         val safeColor =
             if (canvasView.isDarkBackground && Color.luminance(color) < 0.25f) {
@@ -547,43 +908,13 @@ class MainActivity : AppCompatActivity() {
             }
         canvasView.currentColor = safeColor
         if (canvasView.currentToolMode == ToolMode.ERASER) {
-            selectTool(ToolMode.PEN)
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Espessura: slider contínuo + presets favoritos (P1..P3)
-    // ---------------------------------------------------------------------
-
-    private fun setupStrokeControls() {
-        seekStroke.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
-                if (!fromUser) return
-                applyStrokeWidth(progress.toFloat())
-            }
-
-            override fun onStartTrackingTouch(bar: SeekBar) = Unit
-            override fun onStopTrackingTouch(bar: SeekBar) = Unit
-        })
-
-        presetButtons.forEachIndexed { index, button ->
-            button.setOnClickListener { applyPreset(index) }
-            button.setOnLongClickListener {
-                savePreset(index)
-                true
-            }
+            selectCategoryTab(CategoryTab.PEN)
         }
     }
 
     private fun updateStrokeControls() {
-        val eraser = canvasView.currentToolMode == ToolMode.ERASER
-        val minValue = if (eraser) ERASER_WIDTH_MIN else PEN_WIDTH_MIN
-        val maxValue = if (eraser) ERASER_WIDTH_MAX else PEN_WIDTH_MAX
         val width = currentToolWidth()
-
-        if (seekStroke.min != minValue) seekStroke.min = minValue
-        if (seekStroke.max != maxValue) seekStroke.max = maxValue
-        seekStroke.progress = width.roundToInt().coerceIn(minValue, maxValue)
+        seekStroke.progress = width.roundToInt().coerceIn(1, 35)
         tvStrokeValue.text = String.format(Locale.US, "%.1f", width)
     }
 
@@ -591,6 +922,7 @@ class MainActivity : AppCompatActivity() {
         ToolMode.PEN -> canvasView.penStrokeWidth
         ToolMode.HIGHLIGHTER -> canvasView.highlighterStrokeWidth
         ToolMode.ERASER -> canvasView.eraserStrokeWidth
+        ToolMode.TEXT -> canvasView.penStrokeWidth
     }
 
     private fun applyStrokeWidth(width: Float) {
@@ -598,16 +930,9 @@ class MainActivity : AppCompatActivity() {
             ToolMode.PEN -> canvasView.penStrokeWidth = width
             ToolMode.HIGHLIGHTER -> canvasView.highlighterStrokeWidth = width
             ToolMode.ERASER -> canvasView.eraserStrokeWidth = width
+            ToolMode.TEXT -> canvasView.penStrokeWidth = width
         }
         tvStrokeValue.text = String.format(Locale.US, "%.1f", width)
-    }
-
-    private fun updateEraserModeButton() {
-        val mode = canvasView.eraserMode
-        btnEraserMode.text = "Borracha: ${mode.displayName}"
-        btnEraserMode.backgroundTintList = ColorStateList.valueOf(
-            if (mode == EraserMode.STROKE) COLOR_ACCENT else COLOR_TOOL_IDLE
-        )
     }
 
     private fun loadPresets() {
@@ -627,8 +952,7 @@ class MainActivity : AppCompatActivity() {
         val preset = presets.getOrNull(index) ?: return
         applyStrokeWidth(preset.width)
         setInkColor(preset.color)
-        seekStroke.progress = preset.width.roundToInt()
-            .coerceIn(seekStroke.min, seekStroke.max)
+        seekStroke.progress = preset.width.roundToInt().coerceIn(1, 35)
         Toast.makeText(this, "Preset P${index + 1} aplicado", Toast.LENGTH_SHORT).show()
     }
 
@@ -651,7 +975,7 @@ class MainActivity : AppCompatActivity() {
     private fun keyColor(index: Int) = "preset_${index}_color"
 
     // ---------------------------------------------------------------------
-    // Diálogos: Template, Estilo (Dark Mode) e Cadernos
+    // Diálogos: Template, Estilo (Dark Mode)
     // ---------------------------------------------------------------------
 
     private fun showTemplateDialog() {
@@ -679,129 +1003,6 @@ class MainActivity : AppCompatActivity() {
                 val newStyle = SheetStyle.of(canvasView.pageTemplate, scheme)
                 canvasView.setSheetStyle(newStyle)
                 updateToolbarState()
-            }
-            .show()
-    }
-
-    private fun showNotebooksDialog() {
-        lifecycleScope.launch {
-            val notebooks = viewModel.getNotebooks()
-            if (notebooks.isEmpty()) {
-                showNewNotebookDialog()
-                return@launch
-            }
-
-            val labels = notebooks.map {
-                "${it.title}   (${it.template.displayName})"
-            }.toTypedArray()
-
-            AlertDialog.Builder(this@MainActivity)
-                .setTitle("Notas")
-                .setItems(labels) { _, which ->
-                    lifecycleScope.launch { openNotebook(notebooks[which].id) }
-                }
-                .setPositiveButton("Nova") { _, _ -> showNewNotebookDialog() }
-                .setNeutralButton("Renomear") { _, _ -> showRenameNotebookDialog(notebooks) }
-                .setNegativeButton("Excluir") { _, _ -> showDeleteNotebookDialog(notebooks) }
-                .show()
-        }
-    }
-
-    private fun showNewNotebookDialog() {
-        val input = EditText(this).apply {
-            hint = "Nome da nota"
-            setSingleLine()
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Nova nota")
-            .setView(input)
-            .setPositiveButton("Criar") { _, _ ->
-                val title = input.text.toString().ifBlank { "Nota ${System.currentTimeMillis() % 1000}" }
-                lifecycleScope.launch {
-                    val id = viewModel.createNotebook(
-                        title = title,
-                        template = PageTemplate.GRID,
-                        sheetStyle = SheetStyle.GRID,
-                        folderId = currentNotebook?.folderId
-                    )
-                    openNotebook(id)
-                }
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    private fun showRenameNotebookDialog(notebooks: List<Notebook>) {
-        val labels = notebooks.map { it.title }.toTypedArray()
-
-        AlertDialog.Builder(this)
-            .setTitle("Renomear nota")
-            .setItems(labels) { _, which ->
-                val notebook = notebooks[which]
-                val input = EditText(this).apply {
-                    setText(notebook.title)
-                    setSelection(text.length)
-                }
-
-                AlertDialog.Builder(this)
-                    .setTitle("Novo nome")
-                    .setView(input)
-                    .setPositiveButton("Salvar") { _, _ ->
-                        val title = input.text.toString().ifBlank { notebook.title }
-                        lifecycleScope.launch {
-                            viewModel.renameNotebook(notebook.id, title)
-                            if (currentNotebook?.id == notebook.id) {
-                                currentNotebook = notebook.copy(title = title)
-                                updateToolbarState()
-                            }
-                        }
-                    }
-                    .setNegativeButton("Cancelar", null)
-                    .show()
-            }
-            .show()
-    }
-
-    private fun showDeleteNotebookDialog(notebooks: List<Notebook>) {
-        val labels = notebooks.map { it.title }.toTypedArray()
-
-        AlertDialog.Builder(this)
-            .setTitle("Excluir nota")
-            .setItems(labels) { _, which ->
-                val notebook = notebooks[which]
-
-                AlertDialog.Builder(this)
-                    .setTitle("Excluir \"${notebook.title}\"?")
-                    .setMessage("Todas as páginas e anotações serão removidas.")
-                    .setPositiveButton("Excluir") { _, _ ->
-                        lifecycleScope.launch {
-                            val deletingCurrent = currentNotebook?.id == notebook.id
-                            if (deletingCurrent) {
-                                autosaveJob?.cancelAndJoin()
-                                autosaveJob = null
-                                currentNotebook = null
-                                currentPage = null
-                            }
-
-                            val pages = viewModel.getPages(notebook.id)
-                            viewModel.deleteNotebook(notebook.id)
-                            pages.forEach { page ->
-                                page.backgroundPath?.let { path -> File(path).delete() }
-                            }
-
-                            if (deletingCurrent) {
-                                val remaining = viewModel.getNotebooks()
-                                if (remaining.isEmpty()) {
-                                    createDefaultNotebook()
-                                } else {
-                                    openNotebook(remaining.first().id)
-                                }
-                            }
-                        }
-                    }
-                    .setNegativeButton("Cancelar", null)
-                    .show()
             }
             .show()
     }
@@ -852,9 +1053,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Renderiza a página correspondente no modo Página Única.
-     */
     private fun renderCurrentPage() {
         val renderer = pdfRenderer
         if (renderer != null && currentPageIndex < renderer.pageCount) {
@@ -889,9 +1087,6 @@ class MainActivity : AppCompatActivity() {
         btnNextPage.alpha = if (hasNext) 1f else 0.35f
     }
 
-    /**
-     * Exportação de Todas as Páginas combinando o fundo do PDF com os traços.
-     */
     private fun exportAnnotatedPdfToUri(uri: Uri) {
         lifecycleScope.launch {
             try {
@@ -916,8 +1111,11 @@ class MainActivity : AppCompatActivity() {
                             if (renderer != null && i < renderer.pageCount) {
                                 val pdfPage = renderer.openPage(i)
                                 try {
-                                    val widthPt = pdfPage.width
-                                    val heightPt = pdfPage.height
+                                    val baseW = pdfPage.width
+                                    val baseH = pdfPage.height
+                                    val widthPt = if (exportWithScratchpad) (baseW * 1.55f).toInt() else baseW
+                                    val heightPt = baseH
+
                                     val pageInfo = PdfDocument.PageInfo.Builder(widthPt, heightPt, i + 1).create()
                                     val docPage = document.startPage(pageInfo)
 
@@ -930,13 +1128,20 @@ class MainActivity : AppCompatActivity() {
                                     pageBitmap.eraseColor(Color.WHITE)
                                     pdfPage.render(pageBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
 
-                                    val destRect = RectF(0f, 0f, widthPt.toFloat(), heightPt.toFloat())
-                                    docPage.canvas.drawBitmap(pageBitmap, null, destRect, null)
+                                    if (exportWithScratchpad) {
+                                        val painter = SheetPainter().apply { this.style = canvasView.sheetStyle }
+                                        val pdfRect = RectF(0f, 0f, baseW.toFloat(), heightPt.toFloat())
+                                        val scratchRect = RectF(baseW.toFloat(), 0f, widthPt.toFloat(), heightPt.toFloat())
+                                        painter.drawScratchpadPage(docPage.canvas, pdfRect, scratchRect, pageBitmap)
+                                    } else {
+                                        val destRect = RectF(0f, 0f, widthPt.toFloat(), heightPt.toFloat())
+                                        docPage.canvas.drawBitmap(pageBitmap, null, destRect, null)
+                                    }
                                     pageBitmap.recycle()
 
                                     if (strokes.isNotEmpty()) {
                                         docPage.canvas.save()
-                                        val scaleX = widthPt.toFloat() / targetSize.first.toFloat()
+                                        val scaleX = baseW.toFloat() / targetSize.first.toFloat()
                                         val scaleY = heightPt.toFloat() / targetSize.second.toFloat()
                                         docPage.canvas.scale(scaleX, scaleY)
 
@@ -980,7 +1185,9 @@ class MainActivity : AppCompatActivity() {
                                     targetWidth = width,
                                     targetHeight = height,
                                     style = canvasView.sheetStyle,
-                                    pressure = pressure
+                                    pressure = pressure,
+                                    includeScratchpad = false,
+                                    texts = canvasView.textElements
                                 )
                                 document.finishPage(docPage)
                             }
@@ -988,122 +1195,89 @@ class MainActivity : AppCompatActivity() {
 
                         contentResolver.openOutputStream(uri)?.use { output ->
                             document.writeTo(output)
-                        } ?: throw IllegalStateException("Não foi possível salvar o arquivo de saída.")
+                        } ?: throw IllegalStateException("Não foi possível salvar o arquivo.")
                     } finally {
                         document.close()
                     }
                 }
 
-                if (canvasView.isContinuousActive) {
-                    canvasView.invalidate()
-                } else {
-                    renderCurrentPage()
-                }
-                Toast.makeText(this@MainActivity, "PDF exportado com sucesso ($totalPages páginas)!", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "PDF exportado com sucesso!", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 Toast.makeText(this@MainActivity, "Erro ao exportar PDF: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                if (canvasView.viewMode != DocumentViewMode.CONTINUOUS) {
+                    renderCurrentPage()
+                }
             }
         }
-    }
-
-    private fun pdfPageTargetSize(width: Int, height: Int): Pair<Int, Int> {
-        val largest = max(width, height).coerceAtLeast(1)
-        val scale = min(2.2f, 2400f / largest)
-        val targetWidth = (width * scale).roundToInt().coerceAtLeast(1)
-        val targetHeight = (height * scale).roundToInt().coerceAtLeast(1)
-        return targetWidth to targetHeight
-    }
-
-    private fun pdfPageSize(widthPx: Int, heightPx: Int): Pair<Int, Int> {
-        val safeWidth = widthPx.coerceAtLeast(1)
-        val safeHeight = heightPx.coerceAtLeast(1)
-        val pdfWidth = PDF_PAGE_WIDTH_PT
-        val pdfHeight = (pdfWidth.toFloat() * safeHeight / safeWidth)
-            .roundToInt()
-            .coerceAtLeast(1)
-        return pdfWidth to pdfHeight
-    }
-
-    private fun queryDisplayName(uri: Uri): String? {
-        var name: String? = null
-        contentResolver.query(
-            uri,
-            arrayOf(OpenableColumns.DISPLAY_NAME),
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (index >= 0) name = cursor.getString(index)
-            }
-        }
-        return name
-    }
-
-    private fun decodeBackground(path: String?): Bitmap? {
-        if (path == null) return null
-        val file = File(path)
-        if (!file.exists()) return null
-
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(path, bounds)
-
-        var sampleSize = 1
-        val maxDimension = 2400
-        while (bounds.outWidth / sampleSize > maxDimension ||
-            bounds.outHeight / sampleSize > maxDimension
-        ) {
-            sampleSize *= 2
-        }
-
-        val options = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-        return BitmapFactory.decodeFile(path, options)
     }
 
     private fun closeCurrentPdf() {
-        runCatching { currentPdfPage?.close() }
+        currentPdfPage?.close()
         currentPdfPage = null
-        runCatching { pdfRenderer?.close() }
+        pdfRenderer?.close()
         pdfRenderer = null
-        runCatching { pdfDescriptor?.close() }
+        pdfDescriptor?.close()
         pdfDescriptor = null
-        currentPageBitmap?.recycle()
-        currentPageBitmap = null
-        pageBitmapCache.values.forEach { it.recycle() }
-        pageBitmapCache.clear()
         currentPdfTempFile?.delete()
         currentPdfTempFile = null
+
+        pageBitmapCache.values.forEach { if (!it.isRecycled) it.recycle() }
+        pageBitmapCache.clear()
+
+        currentPageBitmap?.recycle()
+        currentPageBitmap = null
     }
 
-    override fun onPause() {
-        super.onPause()
-        lifecycleScope.launch {
-            withContext(NonCancellable) { saveCurrentPage() }
+    private fun pdfPageTargetSize(srcWidth: Int, srcHeight: Int): Pair<Int, Int> {
+        val maxDim = 2048f
+        val srcMax = max(srcWidth, srcHeight).toFloat()
+        val scale = if (srcMax > maxDim) maxDim / srcMax else 1f
+        val w = (srcWidth * scale).toInt().coerceAtLeast(1)
+        val h = (srcHeight * scale).toInt().coerceAtLeast(1)
+        return Pair(w, h)
+    }
+
+    private fun pdfPageSize(srcWidth: Int, srcHeight: Int): Pair<Int, Int> {
+        val maxPt = 1200f
+        val srcMax = max(srcWidth, srcHeight).toFloat()
+        val scale = if (srcMax > maxPt) maxPt / srcMax else 1f
+        val w = (srcWidth * scale).toInt().coerceAtLeast(1)
+        val h = (srcHeight * scale).toInt().coerceAtLeast(1)
+        return Pair(w, h)
+    }
+
+    private fun decodeBackground(path: String?): Bitmap? {
+        if (path.isNullOrEmpty()) return null
+        val file = File(path)
+        if (!file.exists()) return null
+        return runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIndex != -1 && cursor.moveToFirst()) {
+                return cursor.getString(nameIndex)
+            }
         }
+        return uri.lastPathSegment
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        closeCurrentPdf()
+        lifecycleScope.launch(NonCancellable) {
+            saveCurrentPage()
+            closeCurrentPdf()
+        }
     }
 
     companion object {
-        const val EXTRA_NOTEBOOK_ID = "com.notes6lite.app.extra.NOTEBOOK_ID"
-        private const val PDF_PAGE_WIDTH_PT = 595
-
-        private const val PEN_WIDTH_MIN = 1
-        private const val PEN_WIDTH_MAX = 35
-        private const val ERASER_WIDTH_MIN = 10
-        private const val ERASER_WIDTH_MAX = 70
-
+        const val EXTRA_NOTEBOOK_ID = "notebook_id"
+        private const val PREFS_NAME = "notes6lite_presets"
         private const val PRESET_COUNT = 3
-        private const val PREFS_NAME = "note_toolbar"
 
-        private val COLOR_ACCENT = Color.parseColor("#2563EB")
-        private val COLOR_TOOL_IDLE = Color.parseColor("#334155")
+        val COLOR_ACCENT: Int = Color.parseColor("#2563EB")
+        val COLOR_TOOL_IDLE: Int = Color.parseColor("#334155")
     }
 }

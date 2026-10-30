@@ -41,6 +41,8 @@ class InkPainter {
                 paint.color = Color.TRANSPARENT
                 paint.alpha = 255
             }
+
+            ToolMode.TEXT -> Unit
         }
         canvas.drawPath(outline.path, paint)
         paint.xfermode = null

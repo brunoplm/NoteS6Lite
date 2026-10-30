@@ -1,255 +1,192 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:background="#0F172A">
 
-    <!-- Barra de Ferramentas Superior (Dark Theme Nativo #1E293B) -->
-    <HorizontalScrollView
+    <!-- 1. Barra Superior Fixa de Categorias (Dark Theme Nativo #0F172A / #1E293B) -->
+    <LinearLayout
+        android:id="@+id/topTabBar"
         android:layout_width="match_parent"
-        android:layout_height="60dp"
+        android:layout_height="52dp"
+        android:layout_alignParentTop="true"
         android:background="#1E293B"
-        android:scrollbars="none"
-        android:elevation="6dp">
+        android:elevation="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="10dp">
 
-        <LinearLayout
+        <!-- Voltar para a biblioteca de pastas -->
+        <Button
+            android:id="@+id/btnHome"
+            android:layout_width="40dp"
+            android:layout_height="38dp"
+            android:backgroundTint="#334155"
+            android:text="⌂"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+        <!-- Título do caderno -->
+        <TextView
+            android:id="@+id/tvNotebookTitle"
             android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:maxWidth="130dp"
+            android:ellipsize="end"
+            android:singleLine="true"
+            android:text="Meu Caderno"
+            android:textColor="#F8FAFC"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="28dp"
+            android:layout_marginHorizontal="8dp"
+            android:background="#334155" />
+
+        <!-- Pílula: Caneta -->
+        <Button
+            android:id="@+id/tabPen"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:backgroundTint="#2563EB"
+            android:text="✒ Caneta"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <!-- Pílula: Borracha -->
+        <Button
+            android:id="@+id/tabEraser"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginStart="4dp"
+            android:backgroundTint="#334155"
+            android:text="⌫ Borracha"
+            android:textColor="#CBD5E1"
+            android:textSize="12sp" />
+
+        <!-- Pílula: Texto -->
+        <Button
+            android:id="@+id/tabText"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginStart="4dp"
+            android:backgroundTint="#334155"
+            android:text="T Texto"
+            android:textColor="#CBD5E1"
+            android:textSize="12sp" />
+
+        <!-- Pílula: Fundo -->
+        <Button
+            android:id="@+id/tabBackground"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginStart="4dp"
+            android:backgroundTint="#334155"
+            android:text="⊞ Fundo"
+            android:textColor="#CBD5E1"
+            android:textSize="12sp" />
+
+        <!-- Pílula: Página / PDF -->
+        <Button
+            android:id="@+id/tabPagePdf"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginStart="4dp"
+            android:backgroundTint="#334155"
+            android:text="📄 Página/PDF"
+            android:textColor="#CBD5E1"
+            android:textSize="12sp" />
+
+        <!-- Espaço flexível -->
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <!-- Ação: Desfazer -->
+        <Button
+            android:id="@+id/btnUndo"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:backgroundTint="#475569"
+            android:text="↶ Desfazer"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp" />
+
+        <!-- Ação: Ajustar Tela -->
+        <Button
+            android:id="@+id/btnResetZoom"
+            android:layout_width="40dp"
+            android:layout_height="38dp"
+            android:layout_marginStart="6dp"
+            android:backgroundTint="#334155"
+            android:text="⊡"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp" />
+
+    </LinearLayout>
+
+    <!-- 2. Sub-barra de Ferramentas Fixa (exibida conforme a aba ativa) -->
+    <FrameLayout
+        android:id="@+id/subBarContainer"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_below="@id/topTabBar"
+        android:background="#1E293B"
+        android:elevation="4dp"
+        android:paddingHorizontal="12dp">
+
+        <!-- SUB-MENU 1: Caneta -->
+        <LinearLayout
+            android:id="@+id/subBarPen"
+            android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingHorizontal="12dp">
+            android:visibility="visible">
 
-            <!-- Voltar para a biblioteca de pastas -->
+            <!-- Tipos de Caneta -->
             <Button
-                android:id="@+id/btnHome"
-                android:layout_width="42dp"
-                android:layout_height="40dp"
-                android:text="⌂"
-                android:textSize="16sp"
+                android:id="@+id/btnPenBallpoint"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:backgroundTint="#2563EB"
+                android:text="Esferográfica"
                 android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
+                android:textSize="11sp" />
 
-            <!-- Notas -->
             <Button
-                android:id="@+id/btnNotebooks"
+                android:id="@+id/btnPenFountain"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="8dp"
-                android:text="Notas"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#2563EB" />
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#334155"
+                android:text="Tinteiro"
+                android:textColor="#CBD5E1"
+                android:textSize="11sp" />
 
-            <TextView
-                android:id="@+id/tvNotebookTitle"
+            <Button
+                android:id="@+id/btnPenHighlighter"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:maxWidth="180dp"
-                android:ellipsize="end"
-                android:singleLine="true"
-                android:text="Meu Caderno"
-                android:textColor="#F8FAFC"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#334155"
+                android:text="Marca-texto"
+                android:textColor="#CBD5E1"
+                android:textSize="11sp" />
 
-            <!-- Divisor -->
             <View
                 android:layout_width="1dp"
-                android:layout_height="32dp"
-                android:layout_marginHorizontal="10dp"
-                android:background="#334155" />
-
-            <!-- Importar e Salvar PDF -->
-            <Button
-                android:id="@+id/btnOpenPdf"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:text="Abrir PDF"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <Button
-                android:id="@+id/btnSavePdf"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Salvar PDF"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#0284C7" />
-
-            <!-- Divisor -->
-            <View
-                android:layout_width="1dp"
-                android:layout_height="32dp"
-                android:layout_marginHorizontal="10dp"
-                android:background="#334155" />
-
-            <!-- Navegação de Páginas -->
-            <Button
-                android:id="@+id/btnPrevPage"
-                android:layout_width="42dp"
-                android:layout_height="40dp"
-                android:text="◀"
-                android:textSize="13sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <TextView
-                android:id="@+id/tvPageIndicator"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="24dp"
                 android:layout_marginHorizontal="8dp"
-                android:text="Pág 1/1"
-                android:textColor="#F8FAFC"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+                android:background="#475569" />
 
-            <Button
-                android:id="@+id/btnNextPage"
-                android:layout_width="42dp"
-                android:layout_height="40dp"
-                android:text="▶"
-                android:textSize="13sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <Button
-                android:id="@+id/btnAddPage"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="+ Pág"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <!-- Modo de exibição: Rolagem contínua (Rolo) ou Página única -->
-            <Button
-                android:id="@+id/btnViewMode"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Rolo 📜"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#2563EB" />
-
-            <!-- Divisor -->
-            <View
-                android:layout_width="1dp"
-                android:layout_height="32dp"
-                android:layout_marginHorizontal="10dp"
-                android:background="#334155" />
-
-            <!-- Template, estilo de folha e pressão -->
-            <Button
-                android:id="@+id/btnTemplate"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:text="Template: Quadriculada"
-                android:textSize="11sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <Button
-                android:id="@+id/btnStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Folha: Claro"
-                android:textSize="11sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <Button
-                android:id="@+id/btnPressure"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Pressão ON"
-                android:textSize="11sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <!-- Divisor -->
-            <View
-                android:layout_width="1dp"
-                android:layout_height="32dp"
-                android:layout_marginHorizontal="10dp"
-                android:background="#334155" />
-
-            <!-- Ferramentas de Escrita -->
-            <Button
-                android:id="@+id/btnToolPen"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:text="Caneta"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#2563EB" />
-
-            <Button
-                android:id="@+id/btnToolHighlighter"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Marca-Texto"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <Button
-                android:id="@+id/btnToolEraser"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Borracha"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
-
-            <Button
-                android:id="@+id/btnEraserMode"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Borracha: Objeto"
-                android:textSize="11sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#2563EB" />
-
-            <Button
-                android:id="@+id/btnUndo"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Desfazer ↶"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#475569" />
-
-            <Button
-                android:id="@+id/btnClearPage"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="6dp"
-                android:text="Limpar"
-                android:textSize="12sp"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#475569" />
-
-            <!-- Divisor -->
-            <View
-                android:layout_width="1dp"
-                android:layout_height="32dp"
-                android:layout_marginHorizontal="10dp"
-                android:background="#334155" />
-
-            <!-- Barra Deslizante de Espessura (Slider Contínuo) -->
+            <!-- Slider de Espessura -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -259,9 +196,9 @@
 
             <SeekBar
                 android:id="@+id/seekStroke"
-                android:layout_width="120dp"
+                android:layout_width="100dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
+                android:layout_marginStart="2dp"
                 android:max="35"
                 android:progress="6" />
 
@@ -272,123 +209,478 @@
                 android:gravity="center"
                 android:text="6.5"
                 android:textColor="#F8FAFC"
-                android:textSize="12sp"
+                android:textSize="11sp"
                 android:textStyle="bold" />
 
-            <!-- Divisor -->
             <View
                 android:layout_width="1dp"
-                android:layout_height="32dp"
-                android:layout_marginHorizontal="10dp"
-                android:background="#334155" />
+                android:layout_height="24dp"
+                android:layout_marginHorizontal="8dp"
+                android:background="#475569" />
 
-            <!-- Presets Favoritos Rápidos (P1, P2, P3 circulares) -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
-                android:text="Presets:"
-                android:textColor="#94A3B8"
-                android:textSize="11sp" />
-
+            <!-- Presets Favoritos (P1, P2, P3) -->
             <Button
                 android:id="@+id/btnPreset1"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
                 android:background="@drawable/bg_circle_button"
                 android:text="P1"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:textColor="#FFFFFF" />
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
 
             <Button
                 android:id="@+id/btnPreset2"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
-                android:layout_marginStart="6dp"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_marginStart="4dp"
                 android:background="@drawable/bg_circle_button"
                 android:text="P2"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:textColor="#FFFFFF" />
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
 
             <Button
                 android:id="@+id/btnPreset3"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
-                android:layout_marginStart="6dp"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_marginStart="4dp"
                 android:background="@drawable/bg_circle_button"
                 android:text="P3"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:textColor="#FFFFFF" />
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
 
-            <!-- Divisor -->
             <View
                 android:layout_width="1dp"
-                android:layout_height="32dp"
-                android:layout_marginHorizontal="10dp"
-                android:background="#334155" />
+                android:layout_height="24dp"
+                android:layout_marginHorizontal="8dp"
+                android:background="#475569" />
 
-            <!-- Paleta de Cores de Estudo -->
+            <!-- Paleta de Cores -->
             <Button
                 android:id="@+id/btnColorBlack"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:text=""
+                android:layout_width="30dp"
+                android:layout_height="30dp"
                 android:backgroundTint="#111827" />
 
             <Button
                 android:id="@+id/btnColorBlue"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:layout_marginStart="6dp"
-                android:text=""
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
                 android:backgroundTint="#1D4ED8" />
 
             <Button
                 android:id="@+id/btnColorRed"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:layout_marginStart="6dp"
-                android:text=""
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
                 android:backgroundTint="#DC2626" />
 
             <Button
                 android:id="@+id/btnColorGreen"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:layout_marginStart="6dp"
-                android:text=""
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
                 android:backgroundTint="#059669" />
 
             <Button
                 android:id="@+id/btnColorYellow"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:layout_marginStart="6dp"
-                android:text=""
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
                 android:backgroundTint="#FACC15" />
 
-            <!-- Centralizar Zoom -->
+        </LinearLayout>
+
+        <!-- SUB-MENU 2: Borracha -->
+        <LinearLayout
+            android:id="@+id/subBarEraser"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
             <Button
-                android:id="@+id/btnResetZoom"
+                android:id="@+id/btnEraserMode"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginStart="12dp"
-                android:text="Ajustar Tela"
-                android:textSize="11sp"
+                android:layout_height="34dp"
+                android:backgroundTint="#2563EB"
+                android:text="Borracha: Objeto"
                 android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
+                android:textSize="11sp" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="24dp"
+                android:layout_marginHorizontal="10dp"
+                android:background="#475569" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Espessura:"
+                android:textColor="#94A3B8"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/seekEraserStroke"
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:max="70"
+                android:progress="42" />
+
+            <TextView
+                android:id="@+id/tvEraserStrokeValue"
+                android:layout_width="32dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="42"
+                android:textColor="#F8FAFC"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="24dp"
+                android:layout_marginHorizontal="10dp"
+                android:background="#475569" />
+
+            <Button
+                android:id="@+id/btnClearPage"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:backgroundTint="#DC2626"
+                android:text="Limpar Página"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
 
         </LinearLayout>
-    </HorizontalScrollView>
 
-    <!-- Área de Desenho Nativa com S-Pen -->
+        <!-- SUB-MENU 3: Texto -->
+        <LinearLayout
+            android:id="@+id/subBarText"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Tamanho da Fonte:"
+                android:textColor="#94A3B8"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/seekTextSize"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:max="40"
+                android:progress="8" />
+
+            <TextView
+                android:id="@+id/tvTextSizeValue"
+                android:layout_width="36dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="20sp"
+                android:textColor="#F8FAFC"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="24dp"
+                android:layout_marginHorizontal="8dp"
+                android:background="#475569" />
+
+            <!-- Cores de Texto -->
+            <Button
+                android:id="@+id/btnTextColorBlack"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:backgroundTint="#111827" />
+
+            <Button
+                android:id="@+id/btnTextColorBlue"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#1D4ED8" />
+
+            <Button
+                android:id="@+id/btnTextColorRed"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#DC2626" />
+
+            <Button
+                android:id="@+id/btnTextColorWhite"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#F8FAFC" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="24dp"
+                android:layout_marginHorizontal="8dp"
+                android:background="#475569" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="💡 Toque na folha para digitar com teclado físico ou virtual"
+                android:textColor="#94A3B8"
+                android:textSize="11sp" />
+
+        </LinearLayout>
+
+        <!-- SUB-MENU 4: Fundo -->
+        <LinearLayout
+            android:id="@+id/subBarBackground"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/btnTemplate"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:backgroundTint="#334155"
+                android:text="Template: Quadriculada"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="6dp"
+                android:backgroundTint="#334155"
+                android:text="Folha: Claro"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnPressure"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="6dp"
+                android:backgroundTint="#334155"
+                android:text="Pressão S-Pen: ON"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+        </LinearLayout>
+
+        <!-- SUB-MENU 5: Página / PDF -->
+        <LinearLayout
+            android:id="@+id/subBarPagePdf"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/btnPrevPage"
+                android:layout_width="36dp"
+                android:layout_height="34dp"
+                android:backgroundTint="#334155"
+                android:text="◀"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/tvPageIndicator"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="6dp"
+                android:text="Pág 1/1"
+                android:textColor="#F8FAFC"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnNextPage"
+                android:layout_width="36dp"
+                android:layout_height="34dp"
+                android:backgroundTint="#334155"
+                android:text="▶"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnAddPage"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#334155"
+                android:text="+ Pág"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="24dp"
+                android:layout_marginHorizontal="8dp"
+                android:background="#475569" />
+
+            <Button
+                android:id="@+id/btnViewMode"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:backgroundTint="#2563EB"
+                android:text="Rolo 📜"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnSideScratchpad"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="6dp"
+                android:backgroundTint="#334155"
+                android:text="Rascunho Lateral: OFF"
+                android:textColor="#CBD5E1"
+                android:textSize="11sp" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="24dp"
+                android:layout_marginHorizontal="8dp"
+                android:background="#475569" />
+
+            <Button
+                android:id="@+id/btnOpenPdf"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:backgroundTint="#334155"
+                android:text="Abrir PDF"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnSavePdf"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#0284C7"
+                android:text="Salvar PDF"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+        </LinearLayout>
+
+    </FrameLayout>
+
+    <!-- 3. Área de Desenho Nativa com S-Pen -->
     <com.notes6lite.app.NoteCanvasView
         android:id="@+id/noteCanvasView"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_height="match_parent"
+        android:layout_below="@id/subBarContainer" />
 
-</LinearLayout>
+    <!-- 4. Pílula Flutuante de Resumo (Minimizado) -->
+    <Button
+        android:id="@+id/btnSummaryPill"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentBottom="true"
+        android:layout_margin="16dp"
+        android:backgroundTint="#2563EB"
+        android:elevation="8dp"
+        android:paddingHorizontal="14dp"
+        android:text="📝 Resumo"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <!-- 5. Painel Flutuante / Dividido de Resumo (Split / Expandido) -->
+    <LinearLayout
+        android:id="@+id/cardSummaryPanel"
+        android:layout_width="match_parent"
+        android:layout_height="250dp"
+        android:layout_alignParentBottom="true"
+        android:layout_marginHorizontal="12dp"
+        android:layout_marginBottom="8dp"
+        android:background="@drawable/bg_card"
+        android:elevation="10dp"
+        android:orientation="vertical"
+        android:padding="10dp"
+        android:visibility="gone">
+
+        <!-- Barra de Cabeçalho do Resumo -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvSummaryTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:singleLine="true"
+                android:text="📝 [Resumo] Meu Caderno"
+                android:textColor="#F8FAFC"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnSummarySizeToggle"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:backgroundTint="#334155"
+                android:text="⤢ Expandir"
+                android:textColor="#CBD5E1"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnSummaryMinimize"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="6dp"
+                android:backgroundTint="#334155"
+                android:text="▾ Minimizar"
+                android:textColor="#CBD5E1"
+                android:textSize="11sp" />
+
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginVertical="6dp"
+            android:background="#334155" />
+
+        <!-- Editor de Texto do Resumo (compatível com teclado físico ou virtual) -->
+        <EditText
+            android:id="@+id/etSummaryContent"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@null"
+            android:gravity="top|start"
+            android:hint="Digite anotações, contas ou resumos vinculados aqui...\nCompatível com teclado físico da capa e teclado na tela."
+            android:inputType="textMultiLine"
+            android:scrollbars="vertical"
+            android:textColor="#F8FAFC"
+            android:textColorHint="#64748B"
+            android:textSize="14sp" />
+
+    </LinearLayout>
+
+</RelativeLayout>
